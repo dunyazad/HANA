@@ -10,12 +10,22 @@ app Counter {
         count = 0
     }
 
-    window title: "Counter" size: 300x200 {
-        column spacing: 8 {
-            label text: "Count: {count}"
+    window {
+        title: "Counter"
+        size: 300x200
+
+        column {
+            spacing: 8
+
+            label { text: "Count: {count}" }
+
             row {
-                button text: "+1" on_click: increment
-                button text: "Reset" on_click: reset enabled: count > 0
+                button { text: "+1"; on_click: increment }
+                button {
+                    text: "Reset"
+                    on_click: reset
+                    enabled: count > 0
+                }
             }
         }
     }

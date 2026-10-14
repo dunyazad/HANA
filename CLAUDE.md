@@ -60,74 +60,16 @@ D3D12 / Vulkan / Metal / Browser WebGPU
 - GPU 어댑터/디바이스 초기화는 콜백 기반 비동기 흐름으로 작성한다 (Dawn도 동일 API 사용).
 - 파일/에셋 로딩은 플랫폼 계층 인터페이스를 통해서만 한다 (웹은 HTTP fetch 또는 가상 파일 시스템).
 
-## 문법 초안 (확정 전, 이 기준으로 Lexer부터 시작)
+## 언어 정의
 
-```
-app Counter {
-    state count: int = 0
+전체 정의와 각 항목의 상태([확정]/[초안]/[미정])는 `docs/language.md`가 기준이다. 문법을 바꾸면 이 문서를 먼저 고친다. [초안]이나 [미정] 항목을 확정된 것처럼 다루지 않는다.
 
-    action increment() {
-        count = count + 1
-    }
-
-    action reset() {
-        count = 0
-    }
-
-    window title: "Counter" size: 300x200 {
-        column spacing: 8 {
-            label text: "Count: {count}"
-            row {
-                button text: "+1" on_click: increment
-                button text: "Reset" on_click: reset enabled: count > 0
-            }
-        }
-    }
-}
-```
-
-3D 통합 예시:
-
-```
-window title: "Viewer" size: 1280x720 {
-    row {
-        viewport3d id: view camera: main_cam {
-            scene: model_scene
-        }
-        column width: 300 {
-            slider label: "Rotation" value: rot min: 0 max: 360
-            button text: "Reset" on_click: reset_view
-        }
-    }
-}
-
-scene model_scene {
-    camera main_cam position: (0, 2, 5) target: (0, 0, 0) fov: 60
-    light sun type: directional direction: (-1, -1, -1) intensity: 3.0
-
-    mesh part source: "part.gltf" rotation: (0, rot, 0) {
-        material metallic: 0.8 roughness: 0.3
-        on_click: select_part
-    }
-
-    panel3d position: (1.5, 1, 0) size: 1x0.6 {
-        label text: "Selected: {selected_name}"
-    }
-}
-```
-
-문법 요소:
-- 주석: `// 한 줄`, `/* 블록 */` (블록 주석은 중첩 가능) - 확정
-- 최상위: `app`, `scene`
-- 선언: `state name: type = init`, `action name(params) { ... }`
-- 위젯: `kind prop: value ... { children }`
-- 문자열 보간: `"Count: {expr}"`
-- 표현식 바인딩: `enabled: count > 0` (참조하는 state가 바뀌면 자동 재평가)
-- 리터럴: int, float, string, bool, 크기 `300x200`, 튜플 `(x, y, z)`
-
-현재 Lexer 구현 (초안 기준의 잠정 동작, 문법이 바뀌면 함께 바뀜):
-- 키워드: `app`, `scene`, `state`, `action`, `true`, `false`. 위젯 종류와 프로퍼티 이름은 일반 식별자
-- 줄바꿈은 Newline 토큰으로 전달 (연속 줄바꿈은 하나로 합침)
+확정된 사항 요약:
+- 주석: `// 한 줄`, `/* 블록 */` (중첩 가능)
+- 문장 구분: 줄바꿈 또는 `;`. `( )`, `[ ]` 안이거나 줄이 연산자, `,`, `:`, `.`로 끝나면 다음 줄로 이어진다. 문자열은 한 줄 안에서 끝난다
+- 위젯: 블록 속성형 `kind { prop: value; child { ... } }`
+- 타입: 정적 타입 + 추론
+- 재사용 UI: `component` 키워드
 
 ## 디렉터리 구조
 
@@ -144,6 +86,8 @@ hana/
       web/
       ...
     cli/         hana executable (run, build, check)
+  docs/
+    language.md  언어 정의
   examples/
     counter.hana
   tests/
@@ -171,6 +115,6 @@ ctest --test-dir build
 ## 아직 정하지 않은 것
 
 - 3D 범위: 시각화/뷰어 수준 / 인터랙티브 콘텐츠 수준(애니메이션, 물리, 파티클) / XR(OpenXR, WebXR) 중 택일
-- 문법 세부: 타입 목록, 리스트/반복 위젯(for), 조건부 위젯(if), 컴포넌트 재사용 문법
+- 문법 세부: `docs/language.md`의 미정 항목 참고
 - 상태 모델 세부: 프로퍼티 바인딩 방식 기본, 단방향 흐름 도입 여부
 - 2D 렌더러를 직접 구현할지, Skia Graphite(Dawn 위)를 쓸지

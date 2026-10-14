@@ -20,6 +20,7 @@ std::string_view token_kind_name(TokenKind kind)
     case TokenKind::InterpMid: return "InterpMid";
     case TokenKind::InterpEnd: return "InterpEnd";
     case TokenKind::KwApp: return "KwApp";
+    case TokenKind::KwComponent: return "KwComponent";
     case TokenKind::KwScene: return "KwScene";
     case TokenKind::KwState: return "KwState";
     case TokenKind::KwAction: return "KwAction";
@@ -29,8 +30,11 @@ std::string_view token_kind_name(TokenKind kind)
     case TokenKind::RParen: return "RParen";
     case TokenKind::LBrace: return "LBrace";
     case TokenKind::RBrace: return "RBrace";
+    case TokenKind::LBracket: return "LBracket";
+    case TokenKind::RBracket: return "RBracket";
     case TokenKind::Comma: return "Comma";
     case TokenKind::Colon: return "Colon";
+    case TokenKind::Semicolon: return "Semicolon";
     case TokenKind::Dot: return "Dot";
     case TokenKind::Plus: return "Plus";
     case TokenKind::Minus: return "Minus";

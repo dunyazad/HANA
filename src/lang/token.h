@@ -27,6 +27,7 @@ enum class TokenKind : std::uint8_t {
     InterpEnd,
 
     KwApp,
+    KwComponent,
     KwScene,
     KwState,
     KwAction,
@@ -37,8 +38,11 @@ enum class TokenKind : std::uint8_t {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Comma,
     Colon,
+    Semicolon,
     Dot,
 
     Plus,

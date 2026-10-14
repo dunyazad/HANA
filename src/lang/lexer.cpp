@@ -38,6 +38,7 @@ struct KeywordEntry {
 
 constexpr KeywordEntry kKeywords[] = {
     {"app", TokenKind::KwApp},
+    {"component", TokenKind::KwComponent},
     {"scene", TokenKind::KwScene},
     {"state", TokenKind::KwState},
     {"action", TokenKind::KwAction},
@@ -60,6 +61,44 @@ bool should_drop_newline(const std::vector<Token>& tokens)
     return tokens.empty() || tokens.back().kind == TokenKind::Newline;
 }
 
+// Tokens after which an expression or statement cannot end, so a following
+// line break continues the current line.
+bool is_line_continuation_token(TokenKind kind)
+{
+    switch (kind) {
+    case TokenKind::Comma:
+    case TokenKind::Colon:
+    case TokenKind::Dot:
+    case TokenKind::Plus:
+    case TokenKind::Minus:
+    case TokenKind::Star:
+    case TokenKind::Slash:
+    case TokenKind::Percent:
+    case TokenKind::Assign:
+    case TokenKind::Equal:
+    case TokenKind::NotEqual:
+    case TokenKind::Less:
+    case TokenKind::LessEqual:
+    case TokenKind::Greater:
+    case TokenKind::GreaterEqual:
+    case TokenKind::AndAnd:
+    case TokenKind::OrOr:
+    case TokenKind::Bang:
+        return true;
+    default:
+        return false;
+    }
+}
+
+char matching_open_bracket(char close)
+{
+    switch (close) {
+    case ')': return '(';
+    case ']': return '[';
+    default: return '{';
+    }
+}
+
 } // namespace
 
 Lexer::Lexer(std::string_view source)
@@ -76,7 +115,8 @@ std::vector<Token> Lexer::tokenize()
     std::vector<Token> tokens;
     for (;;) {
         Token token = next_token();
-        if (token.kind == TokenKind::Newline && should_drop_newline(tokens)) {
+        if (token.kind == TokenKind::Newline &&
+            (should_drop_newline(tokens) || continues_line(tokens))) {
             continue;
         }
         const bool done = token.kind == TokenKind::EndOfFile;
@@ -113,7 +153,7 @@ Token Lexer::next_token()
     }
     if (c == '}' && closes_interpolation()) {
         advance();
-        interpolation_stack_.pop_back();
+        close_interpolation();
         return lex_string_segment(false);
     }
     return lex_punctuation();
@@ -122,7 +162,7 @@ Token Lexer::next_token()
 Token Lexer::lex_end_of_file()
 {
     if (!interpolation_stack_.empty()) {
-        interpolation_stack_.clear();
+        abandon_interpolations();
         report(token_start_, "unterminated string interpolation at end of file");
     }
     return make_token(TokenKind::EndOfFile, "");
@@ -133,7 +173,7 @@ Token Lexer::lex_newline()
     if (!interpolation_stack_.empty()) {
         // Strings cannot span lines, so the open interpolation is broken.
         // Do not consume the newline; it is emitted on the next call.
-        interpolation_stack_.clear();
+        abandon_interpolations();
         return make_error("unterminated string interpolation");
     }
     advance();
@@ -184,7 +224,7 @@ Token Lexer::lex_string_segment(bool is_first_segment)
                               std::move(text));
         }
         if (c == '{') {
-            interpolation_stack_.push_back(0);
+            interpolation_stack_.push_back(bracket_stack_.size());
             return make_token(is_first_segment ? TokenKind::InterpStart : TokenKind::InterpMid,
                               std::move(text));
         }
@@ -202,12 +242,15 @@ Token Lexer::lex_punctuation()
 {
     const char c = advance();
     switch (c) {
-    case '(': return make_lexeme_token(TokenKind::LParen);
-    case ')': return make_lexeme_token(TokenKind::RParen);
-    case '{': track_brace_open(); return make_lexeme_token(TokenKind::LBrace);
-    case '}': track_brace_close(); return make_lexeme_token(TokenKind::RBrace);
+    case '(': track_open_bracket(c); return make_lexeme_token(TokenKind::LParen);
+    case ')': track_close_bracket(c); return make_lexeme_token(TokenKind::RParen);
+    case '[': track_open_bracket(c); return make_lexeme_token(TokenKind::LBracket);
+    case ']': track_close_bracket(c); return make_lexeme_token(TokenKind::RBracket);
+    case '{': track_open_bracket(c); return make_lexeme_token(TokenKind::LBrace);
+    case '}': track_close_bracket(c); return make_lexeme_token(TokenKind::RBrace);
     case ',': return make_lexeme_token(TokenKind::Comma);
     case ':': return make_lexeme_token(TokenKind::Colon);
+    case ';': return make_lexeme_token(TokenKind::Semicolon);
     case '.': return make_lexeme_token(TokenKind::Dot);
     case '+': return make_lexeme_token(TokenKind::Plus);
     case '-': return make_lexeme_token(TokenKind::Minus);
@@ -334,21 +377,59 @@ bool Lexer::read_escape_sequence(std::string& out)
 
 bool Lexer::closes_interpolation() const
 {
-    return !interpolation_stack_.empty() && interpolation_stack_.back() == 0;
+    // A '}' ends the innermost interpolation unless a '{' opened inside the
+    // interpolated expression is still waiting for it.
+    if (interpolation_stack_.empty()) {
+        return false;
+    }
+    for (std::size_t i = interpolation_stack_.back(); i < bracket_stack_.size(); ++i) {
+        if (bracket_stack_[i] == '{') {
+            return false;
+        }
+    }
+    return true;
 }
 
-void Lexer::track_brace_open()
+void Lexer::close_interpolation()
 {
-    if (!interpolation_stack_.empty()) {
-        ++interpolation_stack_.back();
+    // Brackets left open inside the expression are dropped together with it.
+    bracket_stack_.resize(interpolation_stack_.back());
+    interpolation_stack_.pop_back();
+}
+
+void Lexer::abandon_interpolations()
+{
+    bracket_stack_.resize(interpolation_stack_.front());
+    interpolation_stack_.clear();
+}
+
+void Lexer::track_open_bracket(char open)
+{
+    bracket_stack_.push_back(open);
+}
+
+void Lexer::track_close_bracket(char close)
+{
+    // Unbalanced brackets are reported by the parser. Here a closer pops back
+    // to its matching opener, never past the start of the current string
+    // interpolation, so one stray bracket does not disturb newline handling
+    // for the rest of the file.
+    const std::size_t floor = interpolation_stack_.empty() ? 0 : interpolation_stack_.back();
+    const char open = matching_open_bracket(close);
+    for (std::size_t i = bracket_stack_.size(); i > floor; --i) {
+        if (bracket_stack_[i - 1] == open) {
+            bracket_stack_.resize(i - 1);
+            return;
+        }
     }
 }
 
-void Lexer::track_brace_close()
+bool Lexer::continues_line(const std::vector<Token>& tokens) const
 {
-    if (!interpolation_stack_.empty() && interpolation_stack_.back() > 0) {
-        --interpolation_stack_.back();
+    if (!bracket_stack_.empty() && bracket_stack_.back() != '{') {
+        return true;
     }
+    return !tokens.empty() && is_line_continuation_token(tokens.back().kind);
 }
 
 Token Lexer::make_token(TokenKind kind, std::string text) const

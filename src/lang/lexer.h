@@ -13,8 +13,12 @@ namespace hana::lang {
 // Converts HANA source text (UTF-8) into a flat token stream.
 //
 // Comments: "// ..." to end of line, "/* ... */" block (may nest).
-// Newlines are significant and emitted as a single Newline token for any run
-// of line breaks; the parser decides where they matter.
+// Statements end at a newline or ';'. A run of line breaks becomes a single
+// Newline token. No Newline is emitted when the line continues:
+//   - inside an open '(' or '[' (the innermost open bracket decides)
+//   - after a token that cannot end an expression (binary operator, '!',
+//     ',', ':', '.')
+// String literals must end on the line where they start.
 // The lexer never stops on an error: it records a Diagnostic, emits an Error
 // token and continues, so all problems in a file are reported at once.
 class Lexer {
@@ -40,8 +44,11 @@ private:
     bool consume_digits_and_fraction();
     bool read_escape_sequence(std::string& out);
     bool closes_interpolation() const;
-    void track_brace_open();
-    void track_brace_close();
+    void close_interpolation();
+    void abandon_interpolations();
+    void track_open_bracket(char open);
+    void track_close_bracket(char close);
+    bool continues_line(const std::vector<Token>& tokens) const;
 
     Token make_token(TokenKind kind, std::string text) const;
     Token make_lexeme_token(TokenKind kind) const;
@@ -57,9 +64,11 @@ private:
     std::string_view source_;
     SourceLocation location_;
     SourceLocation token_start_;
-    // One entry per open string interpolation; value is the number of '{'
-    // opened inside the interpolated expression and not yet closed.
-    std::vector<int> interpolation_stack_;
+    // Currently open '(', '[' and '{' in source order.
+    std::vector<char> bracket_stack_;
+    // One entry per open string interpolation: the size of bracket_stack_
+    // when the interpolation started.
+    std::vector<std::size_t> interpolation_stack_;
     std::vector<Diagnostic> diagnostics_;
 };
 

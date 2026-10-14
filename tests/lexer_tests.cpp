@@ -48,15 +48,16 @@ void test_empty_source()
 
 void test_keywords_and_identifiers()
 {
-    const std::vector<Token> tokens = lex("app scene state action true false button on_click _x1");
+    const std::vector<Token> tokens =
+        lex("app component scene state action true false button on_click _x1");
     const std::vector<TokenKind> expected = {
-        TokenKind::KwApp,      TokenKind::KwScene,    TokenKind::KwState,
+        TokenKind::KwApp,      TokenKind::KwComponent, TokenKind::KwScene,    TokenKind::KwState,
         TokenKind::KwAction,   TokenKind::KwTrue,     TokenKind::KwFalse,
         TokenKind::Identifier, TokenKind::Identifier, TokenKind::Identifier,
         TokenKind::EndOfFile,
     };
     EXPECT(kinds_of(tokens) == expected);
-    EXPECT(tokens[7].text == "on_click");
+    EXPECT(tokens[8].text == "on_click");
 }
 
 void test_numbers_and_sizes()
@@ -83,14 +84,15 @@ void test_invalid_number()
 
 void test_operators()
 {
-    const std::vector<Token> tokens = lex("= == != < <= > >= && || ! + - * / % ( ) { } , : .");
+    const std::vector<Token> tokens = lex("= == != < <= > >= && || ! + - * / % ( ) [ ] { } , : ; .");
     const std::vector<TokenKind> expected = {
         TokenKind::Assign,  TokenKind::Equal,        TokenKind::NotEqual, TokenKind::Less,
         TokenKind::LessEqual, TokenKind::Greater,    TokenKind::GreaterEqual, TokenKind::AndAnd,
         TokenKind::OrOr,    TokenKind::Bang,         TokenKind::Plus,     TokenKind::Minus,
         TokenKind::Star,    TokenKind::Slash,        TokenKind::Percent,  TokenKind::LParen,
-        TokenKind::RParen,  TokenKind::LBrace,       TokenKind::RBrace,   TokenKind::Comma,
-        TokenKind::Colon,   TokenKind::Dot,          TokenKind::EndOfFile,
+        TokenKind::RParen,  TokenKind::LBracket,     TokenKind::RBracket, TokenKind::LBrace,
+        TokenKind::RBrace,  TokenKind::Comma,        TokenKind::Colon,    TokenKind::Semicolon,
+        TokenKind::Dot,     TokenKind::EndOfFile,
     };
     EXPECT(kinds_of(tokens) == expected);
 }
@@ -216,16 +218,99 @@ void test_byte_order_mark_is_skipped()
     EXPECT(tokens[0].location.column == 1);
 }
 
-void test_counter_widget_line()
+void test_newline_inside_parens_and_brackets()
 {
-    Lexer lexer("button text: \"Reset\" on_click: reset enabled: count > 0");
+    const std::vector<Token> tokens = lex("(1,\n 2\n)\n[3\n]\nx");
+    const std::vector<TokenKind> expected = {
+        TokenKind::LParen,     TokenKind::IntLiteral, TokenKind::Comma,
+        TokenKind::IntLiteral, TokenKind::RParen,     TokenKind::Newline,
+        TokenKind::LBracket,   TokenKind::IntLiteral, TokenKind::RBracket,
+        TokenKind::Newline,    TokenKind::Identifier, TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
+void test_newline_inside_braces_is_kept()
+{
+    // The innermost open bracket decides: a block inside parentheses keeps
+    // its statement separators.
+    const std::vector<Token> tokens = lex("f({\na\nb\n})");
+    const std::vector<TokenKind> expected = {
+        TokenKind::Identifier, TokenKind::LParen,     TokenKind::LBrace,
+        TokenKind::Newline,    TokenKind::Identifier, TokenKind::Newline,
+        TokenKind::Identifier, TokenKind::Newline,    TokenKind::RBrace,
+        TokenKind::RParen,     TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
+void test_newline_after_operator_continues()
+{
+    const std::vector<Token> tokens = lex("a = b +\n c &&\n\n d\ntext:\n \"x\"");
+    const std::vector<TokenKind> expected = {
+        TokenKind::Identifier, TokenKind::Assign,     TokenKind::Identifier,
+        TokenKind::Plus,       TokenKind::Identifier, TokenKind::AndAnd,
+        TokenKind::Identifier, TokenKind::Newline,    TokenKind::Identifier,
+        TokenKind::Colon,      TokenKind::StringLiteral, TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
+void test_newline_after_operand_ends_statement()
+{
+    const std::vector<Token> tokens = lex("a = b\n+c");
+    const std::vector<TokenKind> expected = {
+        TokenKind::Identifier, TokenKind::Assign, TokenKind::Identifier, TokenKind::Newline,
+        TokenKind::Plus,       TokenKind::Identifier, TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
+void test_stray_closer_does_not_break_newlines()
+{
+    const std::vector<Token> tokens = lex("(a ]\n b)\nc");
+    const std::vector<TokenKind> expected = {
+        TokenKind::LParen,     TokenKind::Identifier, TokenKind::RBracket,
+        TokenKind::Identifier, TokenKind::RParen,     TokenKind::Newline,
+        TokenKind::Identifier, TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
+void test_broken_interpolation_releases_brackets()
+{
+    Lexer lexer("x \"{f(\ny\nz");
     const std::vector<Token> tokens = lexer.tokenize();
     const std::vector<TokenKind> expected = {
-        TokenKind::Identifier, TokenKind::Identifier, TokenKind::Colon,
-        TokenKind::StringLiteral, TokenKind::Identifier, TokenKind::Colon,
-        TokenKind::Identifier, TokenKind::Identifier, TokenKind::Colon,
-        TokenKind::Identifier, TokenKind::Greater,    TokenKind::IntLiteral,
+        TokenKind::Identifier, TokenKind::InterpStart, TokenKind::Identifier,
+        TokenKind::LParen,     TokenKind::Error,       TokenKind::Newline,
+        TokenKind::Identifier, TokenKind::Newline,     TokenKind::Identifier,
         TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
+void test_unclosed_paren_inside_interpolation()
+{
+    Lexer lexer("\"{f(}\"\nx");
+    const std::vector<Token> tokens = lexer.tokenize();
+    const std::vector<TokenKind> expected = {
+        TokenKind::InterpStart, TokenKind::Identifier, TokenKind::LParen,
+        TokenKind::InterpEnd,   TokenKind::Newline,    TokenKind::Identifier,
+        TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
+void test_block_property_widget()
+{
+    Lexer lexer("button { text: \"+1\"; on_click: increment }");
+    const std::vector<Token> tokens = lexer.tokenize();
+    const std::vector<TokenKind> expected = {
+        TokenKind::Identifier, TokenKind::LBrace,     TokenKind::Identifier,
+        TokenKind::Colon,      TokenKind::StringLiteral, TokenKind::Semicolon,
+        TokenKind::Identifier, TokenKind::Colon,      TokenKind::Identifier,
+        TokenKind::RBrace,     TokenKind::EndOfFile,
     };
     EXPECT(kinds_of(tokens) == expected);
     EXPECT(lexer.diagnostics().empty());
@@ -252,7 +337,14 @@ int main()
     test_locations();
     test_unexpected_character();
     test_byte_order_mark_is_skipped();
-    test_counter_widget_line();
+    test_newline_inside_parens_and_brackets();
+    test_newline_inside_braces_is_kept();
+    test_newline_after_operator_continues();
+    test_newline_after_operand_ends_statement();
+    test_stray_closer_does_not_break_newlines();
+    test_broken_interpolation_releases_brackets();
+    test_unclosed_paren_inside_interpolation();
+    test_block_property_widget();
 
     if (g_failures != 0) {
         std::fprintf(stderr, "%d expectation(s) failed\n", g_failures);
