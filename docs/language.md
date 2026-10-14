@@ -213,5 +213,135 @@ app Counter {
 }
 ```
 
-## 5. 미정 항목
-- `scene` 블록과 3D 노드 문법 (3D 범위를 먼저 정한 뒤 결정)
+## 5. 3D
+
+### 5.1 범위 [확정: 인터랙티브 콘텐츠]
+- 포함: glTF 모델과 PBR 렌더링, 카메라, 조명, 피킹, glTF 애니메이션 재생, 트윈, 프레임 갱신, 물리, 파티클, 3D 공간 안의 2D UI(`panel3d`)
+- 제외: XR (OpenXR, WebXR)
+
+### 5.2 씬 선언과 참조 [확정: 별도 `scene` 선언 + 참조]
+```
+app Viewer {
+    state rot: float = 0
+
+    scene model_scene {
+        camera { id: main_cam; transform { position: (0, 2, 5) }; target: (0, 0, 0) }
+        mesh { source: "part.gltf"; transform { rotation: (0, rot, 0) } }
+    }
+
+    window {
+        viewport3d { scene: model_scene; camera: main_cam }
+    }
+}
+```
+- 씬은 `scene name { ... }`으로 따로 선언하고, `viewport3d`가 이름으로 참조한다. 하나의 씬을 여러 뷰포트에서 볼 수 있다.
+- [초안] `scene`은 `app`/`component` 안에 선언하고, 그 안의 state와 action을 그대로 참조한다.
+- [초안] 씬 안에서도 `if` / `for`로 노드를 조건부로 두거나 반복해 만들 수 있다.
+- 전체 예시: `examples/viewer.hana`
+
+### 5.3 노드 변환과 계층 [확정: `transform` 하위 블록]
+```
+node {
+    id: arm
+    transform {
+        position: (0, 1, 0)
+        rotation: (0, 45, 0)
+        scale: (1, 1, 1)
+    }
+
+    mesh { source: "hand.gltf"; transform { position: (0, 0.5, 0) } }
+}
+```
+- 변환은 노드 안의 `transform { }` 블록에 쓴다.
+- 노드 안에 노드를 쓰면 자식이 되고, 자식의 변환은 부모 좌표계 기준이다.
+- [초안] `transform`, `material`처럼 노드의 성질을 묶는 블록은 자식 노드가 아니다. 어떤 이름이 성질 블록인지는 노드 종류마다 정해져 있다.
+- [초안] `rotation`은 오일러 각(도 단위, XYZ 순서). 쿼터니언 표기는 필요해지면 추가한다.
+- [초안] 좌표계는 glTF와 같은 오른손 좌표계, Y가 위, 단위는 미터.
+
+### 5.4 노드 종류 [초안]
+| 노드 | 용도 | 주요 프로퍼티 / 블록 |
+|---|---|---|
+| `node` | 빈 그룹 | `transform` |
+| `camera` | 카메라 | `transform`, `target`, `fov`, `near`, `far` |
+| `light` | 조명 | `type: directional / point / spot`, `color`, `intensity`, `direction` |
+| `mesh` | glTF 모델 | `source`, `transform`, `material`, `animation`, `body` |
+| `panel3d` | 3D 공간 안의 2D UI | `transform`, `size`, 자식 2D 위젯 |
+| `particles` | 파티클 방출기 | `transform`, `rate`, `lifetime`, `velocity`, `color` |
+
+### 5.5 3D 안의 2D UI [확정: `panel3d` 1차 범위 포함]
+```
+panel3d {
+    transform { position: (1.5, 1, 0) }
+    size: 1x0.6
+
+    label { text: "Selected: {selected_name}" }
+    button { text: "Close"; on_click: { selected_name = "" } }
+}
+```
+- [초안] 자식은 일반 2D 위젯이고, 2D 렌더러 결과를 텍스처로 씬에 그린다. 3D 공간에서 클릭하면 패널 좌표로 바꿔 2D 위젯에 전달한다.
+- [초안] `size`는 미터 단위다.
+
+### 5.6 이벤트와 피킹 [초안]
+```
+mesh {
+    source: "part.gltf"
+    on_click: select_part
+    on_hover: { hovered = true }
+}
+```
+- 3D 노드도 2D 위젯과 같은 방식의 이벤트 핸들러를 갖는다.
+
+### 5.7 애니메이션 [초안]
+```
+mesh {
+    source: "robot.gltf"
+    animation { clip: "Walk"; playing: walking; loop: true; speed: 1.0 }
+}
+
+action open_door() {
+    animate door_angle to 90 over 0.5 ease: ease_out
+}
+```
+- glTF 애니메이션은 `animation` 블록으로 재생한다.
+- 트윈은 action 안의 `animate <state> to <값> over <초>` 문으로 state 값을 시간에 따라 바꾼다. 바인딩된 프로퍼티는 자동으로 따라 움직인다.
+- [미정] `animate`, `to`, `over`를 키워드로 만들지, 내장 함수 `animate(door_angle, to: 90, duration: 0.5)`로 할지
+
+### 5.8 프레임 갱신 [초안]
+```
+scene world {
+    on_frame: tick
+}
+
+action tick(dt: float) {
+    rot = rot + 30 * dt
+}
+```
+- `on_frame`에 연결한 action은 매 프레임 경과 시간 `dt`(초)를 받는다.
+
+### 5.9 물리 [초안]
+```
+mesh {
+    source: "ball.gltf"
+    transform { position: (0, 5, 0) }
+    body { type: dynamic; mass: 1.0; shape: sphere; restitution: 0.6 }
+    on_collide: bounce
+}
+```
+- `body` 블록이 있는 노드만 물리 시뮬레이션에 참여한다. `type: static / dynamic / kinematic`.
+- 물리가 움직인 노드의 변환은 시뮬레이션이 소유한다. `transform`은 초기값으로만 쓴다.
+- [미정] 물리 엔진 (직접 구현 / Jolt Physics 등 외부 라이브러리)
+
+### 5.10 파티클 [초안]
+```
+particles {
+    transform { position: (0, 0, 0) }
+    rate: 200
+    lifetime: 1.5
+    velocity: (0, 2, 0)
+    color: #ffaa00
+}
+```
+
+## 6. 미정 항목
+- 트윈 문법: 전용 문(`animate x to v over t`)과 내장 함수 중 선택
+- 물리 엔진 선택

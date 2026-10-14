@@ -75,6 +75,8 @@ D3D12 / Vulkan / Metal / Browser WebGPU
 - 색 리터럴: `#rrggbb`, `#rrggbbaa`
 - 타입: 정적 타입 + 추론. 기본 타입 `int float bool string size vec2 vec3 color list<T>`
 - 재사용 UI: `component` 키워드
+- 3D 범위: 인터랙티브 콘텐츠 (glTF/PBR, 피킹, 애니메이션, 트윈, 물리, 파티클, `panel3d`). XR은 제외
+- 3D 씬: 별도 `scene name { }` 선언을 `viewport3d { scene: name }`이 참조. 노드 변환은 `transform { }` 하위 블록, 노드 중첩이 계층
 
 ## 디렉터리 구조
 
@@ -95,6 +97,7 @@ hana/
     language.md  언어 정의
   examples/
     counter.hana
+    viewer.hana
   tests/
 ```
 
@@ -113,12 +116,12 @@ ctest --test-dir build
 2. 런타임: 트리 순회 인터프리터, 반응형 바인딩(의존성 그래프), 레이아웃
 3. 첫 백엔드: Windows + Dawn(WebGPU) 2D 렌더러
 4. WASM 빌드 (Emscripten)
-5. 3D: 씬 그래프, glTF 로더, PBR, 피킹
+5. 3D: 씬 그래프, glTF 로더, PBR, 피킹, panel3d -> 애니메이션/트윈, 물리, 파티클
 6. 모바일 (Android NDK / iOS)
 7. C++ 호스트 연동 FFI, 핫 리로드, 바이트코드 VM
 
 ## 아직 정하지 않은 것
 
-- 3D 범위: 시각화/뷰어 수준 / 인터랙티브 콘텐츠 수준(애니메이션, 물리, 파티클) / XR(OpenXR, WebXR) 중 택일
-- 문법 세부: `docs/language.md`의 미정 항목 참고 (scene/3D 문법은 3D 범위 결정 후)
+- 문법 세부: `docs/language.md`의 미정 항목 참고
+- 물리 엔진: 직접 구현 / 외부 라이브러리(Jolt Physics 등)
 - 2D 렌더러를 직접 구현할지, Skia Graphite(Dawn 위)를 쓸지
