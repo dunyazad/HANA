@@ -200,7 +200,7 @@ let name = match shape {
 - [초안] `for`는 이터레이터 trait을 구현한 값을 순회한다.
 - [미정] `match`의 패턴 문법 세부 (enum 정의 방식이 정해진 뒤)
 
-## 6.1 클로저 [확정: 캡처는 기본 읽기, 이동은 `sink`로 명시]
+### 6.1 클로저 [확정: 캡처는 기본 읽기, 이동은 `sink`로 명시]
 ```
 let limit = 10
 let small = items.filter(fn(x: i32) -> bool { return x < limit })   // reads limit
