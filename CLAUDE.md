@@ -117,15 +117,17 @@ scene model_scene {
 ```
 
 문법 요소:
-- 주석: `// 한 줄`, `/* 블록 */` (블록 주석은 중첩 가능)
-- 키워드: `app`, `scene`, `state`, `action`, `true`, `false` (위젯 종류와 프로퍼티 이름은 일반 식별자. 파서는 `scene:`처럼 키워드가 프로퍼티 이름 자리에 오는 경우를 허용해야 한다)
-- 줄바꿈은 Newline 토큰으로 전달된다 (연속 줄바꿈은 하나로 합침). 의미 부여는 파서가 한다
+- 주석: `// 한 줄`, `/* 블록 */` (블록 주석은 중첩 가능) - 확정
 - 최상위: `app`, `scene`
 - 선언: `state name: type = init`, `action name(params) { ... }`
 - 위젯: `kind prop: value ... { children }`
 - 문자열 보간: `"Count: {expr}"`
 - 표현식 바인딩: `enabled: count > 0` (참조하는 state가 바뀌면 자동 재평가)
 - 리터럴: int, float, string, bool, 크기 `300x200`, 튜플 `(x, y, z)`
+
+현재 Lexer 구현 (초안 기준의 잠정 동작, 문법이 바뀌면 함께 바뀜):
+- 키워드: `app`, `scene`, `state`, `action`, `true`, `false`. 위젯 종류와 프로퍼티 이름은 일반 식별자
+- 줄바꿈은 Newline 토큰으로 전달 (연속 줄바꿈은 하나로 합침)
 
 ## 디렉터리 구조
 
