@@ -98,6 +98,34 @@ void test_generic_type()
     EXPECT(kinds_of(tokens) == expected);
 }
 
+void test_color_literals()
+{
+    Lexer lexer("#ff8800 #FF8800CC #fff #ff8800c #ff88zz x");
+    const std::vector<Token> tokens = lexer.tokenize();
+    EXPECT(tokens[0].kind == TokenKind::ColorLiteral && tokens[0].text == "#ff8800");
+    EXPECT(tokens[1].kind == TokenKind::ColorLiteral && tokens[1].text == "#FF8800CC");
+    EXPECT(tokens[2].kind == TokenKind::Error && tokens[2].text == "#fff");
+    EXPECT(tokens[3].kind == TokenKind::Error && tokens[3].text == "#ff8800c");
+    EXPECT(tokens[4].kind == TokenKind::Error && tokens[4].text == "#ff88zz");
+    EXPECT(tokens[5].kind == TokenKind::Identifier);
+    EXPECT(lexer.diagnostics().size() == 3);
+}
+
+void test_bind_and_for_key()
+{
+    const std::vector<Token> tokens =
+        lex("value: bind rot\nfor item in items key: item.id {}");
+    const std::vector<TokenKind> expected = {
+        TokenKind::Identifier, TokenKind::Colon,      TokenKind::KwBind,
+        TokenKind::Identifier, TokenKind::Newline,    TokenKind::KwFor,
+        TokenKind::Identifier, TokenKind::KwIn,       TokenKind::Identifier,
+        TokenKind::Identifier, TokenKind::Colon,      TokenKind::Identifier,
+        TokenKind::Dot,        TokenKind::Identifier, TokenKind::LBrace,
+        TokenKind::RBrace,     TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
 void test_numbers_and_sizes()
 {
     const std::vector<Token> tokens = lex("0 42 3.0 300x200 1x0.6 1.foo");
@@ -363,6 +391,8 @@ int main()
     test_control_flow_keywords();
     test_inline_handler_block();
     test_generic_type();
+    test_color_literals();
+    test_bind_and_for_key();
     test_numbers_and_sizes();
     test_invalid_number();
     test_operators();

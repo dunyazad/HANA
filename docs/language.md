@@ -35,7 +35,7 @@ a = 1; b = 2                    // two statements on one line
 ```
 
 ### 1.4 키워드 [초안]
-`app` `component` `scene` `state` `action` `if` `else` `for` `in` `true` `false`
+`app` `component` `scene` `state` `action` `if` `else` `for` `in` `bind` `true` `false`
 
 위젯 종류(`window`, `button` 등), 프로퍼티 이름, 타입 이름(`int` 등)은 키워드가 아니라 일반 식별자다.
 
@@ -50,6 +50,7 @@ a = 1; b = 2                    // two statements on one line
 | 크기 | `300x200`, `1x0.6` |
 | 튜플 | `(x, y, z)` |
 | 리스트 | `[1, 2, 3]`, `[]` |
+| 색 | `#ff8800`, `#ff8800cc` (16진 6자리 또는 알파 포함 8자리) [확정] |
 
 ### 1.6 연산자 [초안]
 `+ - * / %`, `== != < <= > >=`, `&& || !`, `=`, `.`
@@ -112,7 +113,15 @@ column {
 ```
 - [초안] `else if`를 허용한다.
 - [초안] 조건이나 리스트가 참조하는 state가 바뀌면 해당 부분의 위젯이 다시 만들어진다.
-- [미정] 반복 위젯의 항목 식별 키 (리스트가 바뀔 때 위젯 상태를 유지하기 위함)
+
+반복 위젯의 키 [확정: 선택 사항인 `key:`]
+```
+for item in items key: item.id {
+    row { label { text: item.name } }
+}
+```
+- 키가 있으면 리스트가 바뀔 때 같은 키의 위젯은 상태를 유지한 채 재사용된다. 없으면 위치(인덱스)로 맞춘다.
+- [초안] `key`는 키워드가 아니라 `for` 헤더에서만 의미를 갖는 이름이다.
 
 ### 2.6 state와 action [초안]
 ```
@@ -125,9 +134,16 @@ action increment() {
 ```
 - `app`과 `component` 안에 선언한다.
 
-### 2.7 표현식 바인딩 [초안]
-- 프로퍼티 값이 state를 참조하면, 그 state가 바뀔 때 자동으로 다시 계산된다.
+### 2.7 바인딩 [확정: 기본 단방향, 양방향은 `bind`로 명시]
+```
+slider { value: rot }           // one-way: reads rot, never changes it
+slider { value: bind rot }      // two-way: dragging the slider updates rot
+```
+- 프로퍼티 값이 state를 참조하면, 그 state가 바뀔 때 자동으로 다시 계산된다 (단방향).
   예: `enabled: count > 0`
+- 위젯이 값을 바꾸려면 `bind`를 붙인다. state가 바뀌는 곳이 코드에서 항상 드러난다.
+- [초안] `bind` 뒤에는 대입 가능한 대상(state 또는 그 필드)만 올 수 있다. `bind count + 1`은 오류다.
+- [초안] `bind`를 받을 수 있는 프로퍼티는 위젯마다 정해져 있다 (`slider.value`, `text_input.text`, `checkbox.checked` 등).
 
 ### 2.8 컴포넌트 [확정: `component` 키워드 사용]
 ```
@@ -155,12 +171,11 @@ component CounterRow(label: string, value: int) {
 | `size` | 너비 x 높이 | `300x200` |
 | `vec2` | 2차원 벡터 | `(1, 2)` |
 | `vec3` | 3차원 벡터 | `(0, 2, 5)` |
-| `color` | 색 | [미정] |
+| `color` | 색 | `#ff8800` |
 | `list<T>` | T의 리스트 | `[1, 2, 3]` |
 
 - [초안] 튜플 리터럴은 기대하는 타입에 따라 `vec2`/`vec3`가 된다.
 - [초안] `int`는 `float` 자리에 쓸 수 있다 (`fov: 60`). 반대 방향은 명시적 변환이 필요하다.
-- [미정] `color` 리터럴 표기 (`#ff8800`, `rgb(1, 0.5, 0)` 등)
 
 ## 4. 예시 [초안]
 
@@ -199,7 +214,4 @@ app Counter {
 ```
 
 ## 5. 미정 항목
-- 입력 위젯의 양방향 바인딩 (`slider { value: rot }`이 `rot`을 갱신하는지)
-- `color` 리터럴 표기
-- 반복 위젯의 항목 식별 키
-- `scene` 블록과 3D 노드 문법
+- `scene` 블록과 3D 노드 문법 (3D 범위를 먼저 정한 뒤 결정)

@@ -26,6 +26,11 @@ bool is_identifier_continue(char c)
     return is_identifier_start(c) || is_digit(c);
 }
 
+bool is_hex_digit(char c)
+{
+    return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
 bool is_utf8_continuation(char c)
 {
     return (static_cast<unsigned char>(c) & 0xC0) == 0x80;
@@ -46,6 +51,7 @@ constexpr KeywordEntry kKeywords[] = {
     {"else", TokenKind::KwElse},
     {"for", TokenKind::KwFor},
     {"in", TokenKind::KwIn},
+    {"bind", TokenKind::KwBind},
     {"true", TokenKind::KwTrue},
     {"false", TokenKind::KwFalse},
 };
@@ -155,6 +161,9 @@ Token Lexer::next_token()
         advance();
         return lex_string_segment(true);
     }
+    if (c == '#') {
+        return lex_color();
+    }
     if (c == '}' && closes_interpolation()) {
         advance();
         close_interpolation();
@@ -212,6 +221,24 @@ Token Lexer::lex_number()
         return make_error("invalid numeric literal");
     }
     return make_lexeme_token(kind);
+}
+
+Token Lexer::lex_color()
+{
+    advance();
+    std::size_t digit_count = 0;
+    while (is_hex_digit(peek())) {
+        advance();
+        ++digit_count;
+    }
+    const bool valid_length = digit_count == 6 || digit_count == 8;
+    if (!valid_length || is_identifier_continue(peek())) {
+        while (is_identifier_continue(peek())) {
+            advance();
+        }
+        return make_error("invalid color literal, expected #rrggbb or #rrggbbaa");
+    }
+    return make_lexeme_token(TokenKind::ColorLiteral);
 }
 
 Token Lexer::lex_string_segment(bool is_first_segment)

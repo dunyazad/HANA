@@ -16,6 +16,7 @@ std::string_view token_kind_name(TokenKind kind)
     case TokenKind::FloatLiteral: return "FloatLiteral";
     case TokenKind::SizeLiteral: return "SizeLiteral";
     case TokenKind::StringLiteral: return "StringLiteral";
+    case TokenKind::ColorLiteral: return "ColorLiteral";
     case TokenKind::InterpStart: return "InterpStart";
     case TokenKind::InterpMid: return "InterpMid";
     case TokenKind::InterpEnd: return "InterpEnd";
@@ -28,6 +29,7 @@ std::string_view token_kind_name(TokenKind kind)
     case TokenKind::KwElse: return "KwElse";
     case TokenKind::KwFor: return "KwFor";
     case TokenKind::KwIn: return "KwIn";
+    case TokenKind::KwBind: return "KwBind";
     case TokenKind::KwTrue: return "KwTrue";
     case TokenKind::KwFalse: return "KwFalse";
     case TokenKind::LParen: return "LParen";

@@ -34,6 +34,7 @@ private:
     Token lex_newline();
     Token lex_identifier();
     Token lex_number();
+    Token lex_color();
     Token lex_string_segment(bool is_first_segment);
     Token lex_punctuation();
     Token lex_unexpected_character();

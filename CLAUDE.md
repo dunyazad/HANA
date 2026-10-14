@@ -70,7 +70,9 @@ D3D12 / Vulkan / Metal / Browser WebGPU
 - 위젯: 블록 속성형 `kind { prop: value; child { ... } }`
 - 위젯 이름: `id: name` 프로퍼티
 - 이벤트 핸들러: action 참조(`on_click: reset`)와 인라인 블록(`on_click: { count = 0 }`) 모두 허용
-- 조건/반복: 위젯 트리 안의 `if cond { } else { }`, `for item in list { }`
+- 조건/반복: 위젯 트리 안의 `if cond { } else { }`, `for item in list key: item.id { }` (`key:`는 선택)
+- 바인딩: 기본 단방향, 위젯이 state를 바꾸는 양방향은 `value: bind rot`으로 명시
+- 색 리터럴: `#rrggbb`, `#rrggbbaa`
 - 타입: 정적 타입 + 추론. 기본 타입 `int float bool string size vec2 vec3 color list<T>`
 - 재사용 UI: `component` 키워드
 
@@ -118,6 +120,5 @@ ctest --test-dir build
 ## 아직 정하지 않은 것
 
 - 3D 범위: 시각화/뷰어 수준 / 인터랙티브 콘텐츠 수준(애니메이션, 물리, 파티클) / XR(OpenXR, WebXR) 중 택일
-- 문법 세부: `docs/language.md`의 미정 항목 참고
-- 상태 모델 세부: 프로퍼티 바인딩 방식 기본, 단방향 흐름 도입 여부
+- 문법 세부: `docs/language.md`의 미정 항목 참고 (scene/3D 문법은 3D 범위 결정 후)
 - 2D 렌더러를 직접 구현할지, Skia Graphite(Dawn 위)를 쓸지

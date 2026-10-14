@@ -19,6 +19,7 @@ enum class TokenKind : std::uint8_t {
     FloatLiteral,
     SizeLiteral,   // 300x200, 1x0.6
     StringLiteral, // "plain text" without interpolation
+    ColorLiteral,  // #rrggbb, #rrggbbaa
 
     // Interpolated string "a{x}b{y}c" is lexed as:
     // InterpStart("a") <tokens of x> InterpMid("b") <tokens of y> InterpEnd("c")
@@ -35,6 +36,7 @@ enum class TokenKind : std::uint8_t {
     KwElse,
     KwFor,
     KwIn,
+    KwBind,
     KwTrue,
     KwFalse,
 
