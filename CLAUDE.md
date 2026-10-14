@@ -5,7 +5,7 @@ GUI를 선언하고 기능(로직)을 정의하는 언어. 하나의 소스로 �
 - 프로젝트/언어 공식 표기: `HANA` (문서, 로고, 제목, 창 제목 등 사람이 읽는 곳은 항상 대문자)
 - 코드 식별자는 소문자 유지: 확장자 `.hana`, CLI `hana run` / `hana build` / `hana check`, 네임스페이스 `hana::`, CMake 타깃 `hana`
 - 매크로/상수 접두사는 대문자: `HANA_VERSION`, `HANA_API` 등
-- 저장소 이름: `hana-lang` (C++ 생태계의 Boost.Hana와 검색 혼동을 피하기 위함)
+- 저장소 이름, 패키지 이름 등 식별용 이름: `hana` (`hana-lang`, `hanalang` 같은 별칭은 쓰지 않는다)
 - 구현 언어: C++ (C++20)
 - 빌드: CMake
 
@@ -132,7 +132,7 @@ scene model_scene {
 ## 디렉터리 구조
 
 ```
-hana-lang/
+hana/
   CMakeLists.txt
   src/
     lang/        Lexer, Parser, AST, Analyzer, IR
