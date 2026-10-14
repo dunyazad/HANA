@@ -117,6 +117,9 @@ scene model_scene {
 ```
 
 문법 요소:
+- 주석: `// 한 줄`, `/* 블록 */` (블록 주석은 중첩 가능)
+- 키워드: `app`, `scene`, `state`, `action`, `true`, `false` (위젯 종류와 프로퍼티 이름은 일반 식별자. 파서는 `scene:`처럼 키워드가 프로퍼티 이름 자리에 오는 경우를 허용해야 한다)
+- 줄바꿈은 Newline 토큰으로 전달된다 (연속 줄바꿈은 하나로 합침). 의미 부여는 파서가 한다
 - 최상위: `app`, `scene`
 - 선언: `state name: type = init`, `action name(params) { ... }`
 - 위젯: `kind prop: value ... { children }`
@@ -133,7 +136,8 @@ hana-lang/
     lang/        Lexer, Parser, AST, Analyzer, IR
     runtime/     Interpreter, State, Binding, Layout, Scene
     render/      WebGPU 2D/3D renderer, WGSL shaders
-    platform/
+    platform/    file_system.h (IFileSystem, 콜백 기반)
+      native/    데스크톱 공용 구현 (NativeFileSystem)
       win32/
       web/
       ...
@@ -143,9 +147,18 @@ hana-lang/
   tests/
 ```
 
+## 빌드와 테스트
+
+```
+cmake -S . -B build -G Ninja
+cmake --build build
+ctest --test-dir build
+./build/hana check --tokens examples/counter.hana
+```
+
 ## 로드맵
 
-1. [다음 작업] 언어 계층: Lexer -> Parser/AST -> Analyzer -> IR. `hana check` 로 토큰/AST/IR 덤프 확인
+1. [진행 중] 언어 계층: Lexer(완료, `hana check --tokens`) -> Parser/AST(다음 작업) -> Analyzer -> IR. `hana check` 로 토큰/AST/IR 덤프 확인
 2. 런타임: 트리 순회 인터프리터, 반응형 바인딩(의존성 그래프), 레이아웃
 3. 첫 백엔드: Windows + Dawn(WebGPU) 2D 렌더러
 4. WASM 빌드 (Emscripten)
@@ -156,6 +169,6 @@ hana-lang/
 ## 아직 정하지 않은 것
 
 - 3D 범위: 시각화/뷰어 수준 / 인터랙티브 콘텐츠 수준(애니메이션, 물리, 파티클) / XR(OpenXR, WebXR) 중 택일
-- 문법 세부: 주석 문법, 타입 목록, 리스트/반복 위젯(for), 조건부 위젯(if), 컴포넌트 재사용 문법
+- 문법 세부: 타입 목록, 리스트/반복 위젯(for), 조건부 위젯(if), 컴포넌트 재사용 문법
 - 상태 모델 세부: 프로퍼티 바인딩 방식 기본, 단방향 흐름 도입 여부
 - 2D 렌더러를 직접 구현할지, Skia Graphite(Dawn 위)를 쓸지
