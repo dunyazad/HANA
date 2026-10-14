@@ -1,0 +1,4 @@
+types.hana:6:15: error: expected 'i64', found 'i32'
+types.hana:7:18: error: operands of '+' have different types 'bool' and 'i32'
+types.hana:8:17: error: integer literal 300 does not fit in 'u8'
+types.hana:9:13: error: unknown name 'undefined_name'

@@ -1,0 +1,8 @@
+fn main() {
+    let = 1
+    let y 2
+    let ok = 3
+}
+
+fn broken( {
+}

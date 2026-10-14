@@ -1,0 +1,12 @@
+fn loud(value: bool) -> bool {
+    println("evaluated {value}")
+    return value
+}
+
+fn main() {
+    let a = loud(false) && loud(true)
+    println("and: {a}")
+    let b = loud(true) || loud(false)
+    println("or: {b}")
+    println("{!a} {3 < 4} {3 >= 4} {'a' < 'b'}")
+}

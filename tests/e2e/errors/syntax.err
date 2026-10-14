@@ -1,0 +1,3 @@
+syntax.hana:2:9: error: expected a variable name, found '='
+syntax.hana:3:11: error: 'let' needs an initial value
+syntax.hana:7:12: error: expected a parameter name, found '{'

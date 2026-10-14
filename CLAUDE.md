@@ -53,6 +53,39 @@ GUI, 3D, 일반 로직, 시스템 프로그래밍까지 C++이 다룰 수 있는
 
 언어 정의의 세부와 각 항목의 상태([확정]/[초안]/[미정])는 `docs/language.md`가 기준이다. 문법을 바꾸면 이 문서를 먼저 고친다.
 
+## 디렉터리 구조
+
+```
+hana/
+  CMakeLists.txt
+  src/
+    support/   SourceLocation, 진단 메시지(DiagnosticEngine), UTF-8
+    lang/      Token, Lexer, AST, Parser, Type, Symbol, Sema (hana::lang)
+    codegen/   LLVM IR 생성, 최적화, 오브젝트 파일 출력 (hana::codegen)
+    driver/    check / build / run 파이프라인, 링커 호출 (hana::driver)
+    cli/       hana 실행 파일
+  docs/
+    language.md  언어 정의
+  examples/
+  tests/
+    unit/        Lexer/Parser/Sema 단위 테스트
+    e2e/run/     <이름>.hana 를 실행해 <이름>.out(표준 출력), .status(종료 코드), .stderr(포함 문구)와 비교
+    e2e/errors/  <이름>.hana 의 진단 메시지가 <이름>.err 의 각 줄을 포함하는지 확인
+```
+
+## 빌드와 테스트
+
+필요: CMake 3.20+, C++20 컴파일러, LLVM 18 개발 패키지 (Ubuntu: `llvm-18-dev`), 링크용 `cc`.
+
+```
+cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+cmake --build build
+ctest --test-dir build
+./build/hana run examples/hello.hana
+./build/hana check --tokens --ast examples/hello.hana
+./build/hana build --emit-ir examples/hello.hana
+```
+
 ## 아직 정하지 않은 것
 
 - 문법 세부: `docs/language.md`의 미정 항목 참고
@@ -61,8 +94,8 @@ GUI, 3D, 일반 로직, 시스템 프로그래밍까지 C++이 다룰 수 있는
 
 ## 로드맵 [초안]
 
-1. 컴파일러 1단계: Lexer -> Parser/AST -> 의미 분석 -> LLVM IR 생성. 목표는 `hana run hello.hana`로 문자열 출력
-2. 언어 코어 확장: struct, enum, trait, 제네릭, 인자 전달 방식, 클로저, 모듈
+1. [완료] 컴파일러 1단계: Lexer -> Parser/AST -> 의미 분석 -> LLVM IR 생성. `hana run hello.hana` 동작. 지원 범위는 `docs/language.md` 13절
+2. [다음 작업] 언어 코어 확장: struct, enum, trait, 제네릭, 클로저, 모듈
 3. `core` / `std` 표준 라이브러리, C ABI 연동
 4. JIT 실행과 핫 리로드
 5. `platform`, `gui` (WebGPU 2D 렌더러)
