@@ -25,6 +25,42 @@
   - 줄이 이항 연산자, 단항 연산자, `,`, `:`, `.` 로 끝날 때.
 - 문자열 리터럴은 시작한 줄에서 끝나야 한다.
 
+### 2.3 리터럴 [확정]
+```
+42  0xff  0b1010  1_000_000  10u8  7i64       // integers
+3.0  1e-3  2.5f32                              // floats
+true  false
+'a'  '\n'                                      // char
+"name = {name}, total = {a + b}"               // string with interpolation
+[1, 2, 3]  []                                  // list
+```
+- 정수: 10진, `0x` 16진, `0b` 2진, `_` 자릿수 구분, 타입 접미사(`u8`, `i64` 등).
+- 실수: 소수점 또는 지수 표기, 접미사 `f32`/`f64`.
+- 문자열 보간: `"{expr}"`. 중괄호 자체는 `\{`, `\}`로 쓴다.
+- 리스트 리터럴: `[a, b, c]`.
+- [초안] 접미사 없는 정수는 `i32`, 실수는 `f64`가 기본이고, 기대 타입이 있으면 그 타입이 된다.
+- [초안] 이스케이프: `\n \t \r \0 \\ \" \' \{ \} \u{XXXX}`
+- [미정] 맵/딕셔너리 리터럴
+
+### 2.4 연산자 [확정: C 계열 + 복합 대입, 오버로딩은 trait]
+- 산술 `+ - * / %`, 비트 `& | ^ ~ << >>`, 비교 `== != < <= > >=`, 논리 `&& || !`
+- 대입 `=`과 복합 대입 `+= -= *= /= %= &= |= ^= <<= >>=`
+- 오버로딩은 trait 구현으로 한다: [초안] `Add`, `Sub`, `Mul`, `Div`, `Eq`, `Ord`, `Index` 등.
+- [초안] 우선순위 (높은 것부터). C와 달리 비트 연산이 비교보다 먼저 묶인다 (`a & mask == 0`이 의도대로 동작).
+  1. 후위: 호출 `f()`, 첨자 `a[i]`, 멤버 `a.b`, `?`
+  2. 전위: `-` `!` `~` `&`(inout 표시) `*`(포인터 역참조, unsafe)
+  3. `* / %`
+  4. `+ -`
+  5. `<< >>`
+  6. `&`
+  7. `^`
+  8. `|`
+  9. `== != < <= > >=` (연쇄 비교 `a < b < c`는 오류)
+  10. `&&`
+  11. `||`
+  12. 대입 `=`, 복합 대입 (식이 아니라 문장)
+- [초안] `++`, `--`는 없다.
+
 ## 3. 선언 [확정]
 ```
 fn add(a: i32, b: i32) -> i32 {
@@ -70,7 +106,37 @@ fn total_area<T: Shape>(shapes: [T]) -> f32 { ... }
 - [초안] 구현은 `impl Trait for Type`, 타입 고유 메서드는 `impl Type`.
 - [초안] 동적 디스패치는 `dyn Trait`로 명시한다.
 - [초안] 메서드의 `self`도 일반 인자와 같은 전달 방식을 따른다: `fn area(self)`, `fn grow(inout self)`, `fn into_parts(sink self)`.
-- [미정] `enum`(대수적 데이터 타입), 연산자 오버로딩
+
+### 4.1 enum [확정: 대수적 데이터 타입]
+```
+enum Shape {
+    Circle(radius: f32)
+    Rect(w: f32, h: f32)
+    Empty
+}
+
+enum Option<T> {
+    Some(T)
+    None
+}
+
+enum Result<T, E> {
+    Ok(T)
+    Err(E)
+}
+
+fn area(s: Shape) -> f32 {
+    return match s {
+        Circle(r) => 3.14159 * r * r
+        Rect(w, h) => w * h
+        Empty => 0.0
+    }
+}
+```
+- 각 경우가 데이터를 가질 수 있는 enum. `Option`과 `Result`도 이것으로 정의된 표준 타입이다.
+- `match`는 모든 경우를 다뤄야 한다 (빠지면 컴파일 오류).
+- [초안] 패턴: 경우 이름과 바인딩 `Circle(r)`, 와일드카드 `_`, 리터럴, 범위 `1..=9`, 가드 `x if x > 0`
+- [초안] 경우 이름은 `match` 안에서는 짧게 (`Circle`), 밖에서는 `Shape.Circle(1.0)`처럼 쓴다.
 
 ## 5. 값 전달과 포인터 [확정: 참조 타입 없음, 인자 전달 방식 + unsafe 포인터]
 ```
@@ -134,6 +200,24 @@ let name = match shape {
 - [초안] `for`는 이터레이터 trait을 구현한 값을 순회한다.
 - [미정] `match`의 패턴 문법 세부 (enum 정의 방식이 정해진 뒤)
 
+## 6.1 클로저 [확정: 캡처는 기본 읽기, 이동은 `sink`로 명시]
+```
+let limit = 10
+let small = items.filter(fn(x: i32) -> bool { return x < limit })   // reads limit
+
+var total = 0
+items.each(fn[inout total](x: i32) { total += x })                  // modifies total
+
+let worker = spawn(fn[sink tx]() { tx.send(42) })                    // tx moves into the thread
+```
+- 캡처 방식은 인자 전달 방식과 같다: 표시 없음(읽기), `inout`, `sink`.
+- 읽기 또는 `inout`으로 캡처한 클로저는 인자로 넘길 수만 있고, 저장하거나 반환할 수 없다 (참조를 저장할 수 없다는 규칙과 같다).
+- 저장해 두는 콜백(GUI 이벤트 핸들러 등)은 모든 캡처가 `sink`(또는 `Rc` 같은 소유 타입을 `sink`로 가져간 것)여야 한다.
+- 다른 스레드로 넘기는 클로저는 `sink` 캡처만 허용하고, 캡처한 값은 모두 `Send`여야 한다.
+- [초안] 문법: 익명 함수 `fn[captures](params) -> T { ... }`. 캡처 목록 `[...]`에는 `inout`/`sink` 캡처만 적고, 읽기 캡처는 자동이다.
+- [초안] 마지막 인자가 클로저면 괄호 밖에 블록으로 쓸 수 있다: `spawn [sink tx] { tx.send(42) }`
+- [미정] 클로저 타입 표기 (`fn(i32) -> bool` 등)
+
 ## 7. 모듈 [확정]
 ```
 // file: geometry/shape.hana  ->  module geometry.shape
@@ -165,7 +249,7 @@ fn read_config(path: str) -> Result<Config, IoError> {
 ```
 let (tx, rx) = channel<i32>()
 
-let worker = spawn {
+let worker = spawn [sink tx] {
     tx.send(42)
 }
 
@@ -187,10 +271,6 @@ counter.lock().value += 1
 - [초안] 외부 함수 선언은 `extern "C" fn ...` 형태.
 
 ## 11. 미정 항목
-- `enum`과 패턴 매칭 세부
-- 클로저와 캡처 규칙 (`spawn { ... }` 블록이 바깥 값을 이동/읽기로 가져가는 방식)
-- 연산자 목록과 우선순위, 복합 대입(`+=` 등), 연산자 오버로딩
-- 리터럴 (정수 접미사, 문자열 보간, 컬렉션 리터럴)
 - 선언형 UI를 위한 범용 기능 (블록 문법, 반응형 상태)
 - 표준 라이브러리 구성
 - JIT/핫 리로드
