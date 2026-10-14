@@ -31,6 +31,10 @@ enum class TokenKind : std::uint8_t {
     KwScene,
     KwState,
     KwAction,
+    KwIf,
+    KwElse,
+    KwFor,
+    KwIn,
     KwTrue,
     KwFalse,
 

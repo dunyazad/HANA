@@ -68,7 +68,10 @@ D3D12 / Vulkan / Metal / Browser WebGPU
 - 주석: `// 한 줄`, `/* 블록 */` (중첩 가능)
 - 문장 구분: 줄바꿈 또는 `;`. `( )`, `[ ]` 안이거나 줄이 연산자, `,`, `:`, `.`로 끝나면 다음 줄로 이어진다. 문자열은 한 줄 안에서 끝난다
 - 위젯: 블록 속성형 `kind { prop: value; child { ... } }`
-- 타입: 정적 타입 + 추론
+- 위젯 이름: `id: name` 프로퍼티
+- 이벤트 핸들러: action 참조(`on_click: reset`)와 인라인 블록(`on_click: { count = 0 }`) 모두 허용
+- 조건/반복: 위젯 트리 안의 `if cond { } else { }`, `for item in list { }`
+- 타입: 정적 타입 + 추론. 기본 타입 `int float bool string size vec2 vec3 color list<T>`
 - 재사용 UI: `component` 키워드
 
 ## 디렉터리 구조

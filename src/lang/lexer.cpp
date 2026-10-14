@@ -42,6 +42,10 @@ constexpr KeywordEntry kKeywords[] = {
     {"scene", TokenKind::KwScene},
     {"state", TokenKind::KwState},
     {"action", TokenKind::KwAction},
+    {"if", TokenKind::KwIf},
+    {"else", TokenKind::KwElse},
+    {"for", TokenKind::KwFor},
+    {"in", TokenKind::KwIn},
     {"true", TokenKind::KwTrue},
     {"false", TokenKind::KwFalse},
 };

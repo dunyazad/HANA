@@ -24,6 +24,10 @@ std::string_view token_kind_name(TokenKind kind)
     case TokenKind::KwScene: return "KwScene";
     case TokenKind::KwState: return "KwState";
     case TokenKind::KwAction: return "KwAction";
+    case TokenKind::KwIf: return "KwIf";
+    case TokenKind::KwElse: return "KwElse";
+    case TokenKind::KwFor: return "KwFor";
+    case TokenKind::KwIn: return "KwIn";
     case TokenKind::KwTrue: return "KwTrue";
     case TokenKind::KwFalse: return "KwFalse";
     case TokenKind::LParen: return "LParen";

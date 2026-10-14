@@ -60,6 +60,44 @@ void test_keywords_and_identifiers()
     EXPECT(tokens[8].text == "on_click");
 }
 
+void test_control_flow_keywords()
+{
+    const std::vector<Token> tokens = lex("if else for in iff input");
+    const std::vector<TokenKind> expected = {
+        TokenKind::KwIf,       TokenKind::KwElse,     TokenKind::KwFor,
+        TokenKind::KwIn,       TokenKind::Identifier, TokenKind::Identifier,
+        TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
+void test_inline_handler_block()
+{
+    Lexer lexer("on_click: {\n    count = 0\n}");
+    const std::vector<Token> tokens = lexer.tokenize();
+    const std::vector<TokenKind> expected = {
+        TokenKind::Identifier, TokenKind::Colon,  TokenKind::LBrace,
+        TokenKind::Newline,    TokenKind::Identifier, TokenKind::Assign,
+        TokenKind::IntLiteral, TokenKind::Newline, TokenKind::RBrace,
+        TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+    EXPECT(lexer.diagnostics().empty());
+}
+
+void test_generic_type()
+{
+    const std::vector<Token> tokens = lex("state items: list<list<int>> = []");
+    const std::vector<TokenKind> expected = {
+        TokenKind::KwState,    TokenKind::Identifier, TokenKind::Colon,
+        TokenKind::Identifier, TokenKind::Less,       TokenKind::Identifier,
+        TokenKind::Less,       TokenKind::Identifier, TokenKind::Greater,
+        TokenKind::Greater,    TokenKind::Assign,     TokenKind::LBracket,
+        TokenKind::RBracket,   TokenKind::EndOfFile,
+    };
+    EXPECT(kinds_of(tokens) == expected);
+}
+
 void test_numbers_and_sizes()
 {
     const std::vector<Token> tokens = lex("0 42 3.0 300x200 1x0.6 1.foo");
@@ -322,6 +360,9 @@ int main()
 {
     test_empty_source();
     test_keywords_and_identifiers();
+    test_control_flow_keywords();
+    test_inline_handler_block();
+    test_generic_type();
     test_numbers_and_sizes();
     test_invalid_number();
     test_operators();
