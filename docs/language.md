@@ -270,7 +270,46 @@ counter.lock().value += 1
 - C++ 템플릿/클래스를 언어에서 직접 쓰는 방식은 하지 않는다.
 - [초안] 외부 함수 선언은 `extern "C" fn ...` 형태.
 
-## 11. 미정 항목
-- 선언형 UI를 위한 범용 기능 (블록 문법, 반응형 상태)
+## 11. 선언형 작성을 위한 범용 기능 [확정: 블록 초기화 + 반응형 값]
+GUI/3D 전용 문법은 없다. 아래 두 기능은 모든 타입에 똑같이 쓰이고, 표준 라이브러리의 GUI/3D는 이 기능 위에 만든다.
+
+### 11.1 블록 초기화
+```
+let p = Point { x: 1.0; y: 2.0 }
+
+let view = Column {
+    spacing: 8
+
+    Label { text: "Count: {count}" }
+    Row {
+        Button { text: "+1"; on_click: [sink count] { count.set(count.get() + 1) } }
+        Button { text: "Reset"; on_click: [sink count] { count.set(0) } }
+    }
+}
+```
+- `Type { field: value }`는 struct를 필드 이름으로 초기화한다.
+- 블록 안에 이름 없이 쓴 값은, 그 타입이 자식을 받는 trait을 구현했을 때 자식 목록에 순서대로 추가된다.
+- 블록 안에서 `if`/`for`를 쓰면 조건에 따라 또는 반복해서 자식을 추가한다.
+- [초안] 자식을 받는 trait 이름은 `Children<T>`. 받을 수 있는 자식 타입 `T`를 타입이 정한다 (2D 위젯 / 3D 노드 구분이 컴파일 시점에 검사됨).
+- [초안] 생략한 필드는 struct 선언의 기본값을 쓴다. 기본값이 없는 필드를 생략하면 오류.
+
+### 11.2 반응형 값
+```
+let count = Signal(0)
+let volume = Signal(0.5)
+
+Label { text: "Count: {count}" }       // re-evaluated whenever count changes
+Slider { value: bind volume }          // two-way: dragging updates volume
+```
+- `Signal<T>`는 값이 바뀌면 알리는 표준 라이브러리 타입이다.
+- 필드 타입이 `Binding<T>`인 자리에 식을 쓰면, 컴파일러가 그 식을 클로저로 감싼다. 식이 읽은 `Signal`이 바뀌면 다시 계산된다.
+- 위젯이 값을 바꾸는 양방향 연결은 `bind signal`로 명시한다. 기본은 단방향이다.
+- [초안] `Signal<T>`는 반응형 런타임이 소유한 값을 가리키는 복사 가능한 핸들이다. 그래서 `sink`로 여러 클로저에 캡처해도 원래 변수를 계속 쓸 수 있다.
+- [초안] `Signal`의 수명은 그것을 만든 범위(컴포넌트 등)가 소유하고, 그 범위가 사라질 때 함께 해제된다.
+- [초안] `Binding<T>` 자리에 반응형 값을 읽지 않는 식을 쓰면 한 번만 계산된다.
+
+## 12. 미정 항목
+- 복사 가능한 타입(`Copy`)의 정의: 정수, 실수, `bool`, 핸들 타입 등은 이동 대신 복사된다는 규칙과 그 표시 방법
+- `Signal` 갱신의 편의 문법 (`count += 1` 등)
 - 표준 라이브러리 구성
 - JIT/핫 리로드
