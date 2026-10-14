@@ -308,8 +308,30 @@ Slider { value: bind volume }          // two-way: dragging updates volume
 - [초안] `Signal`의 수명은 그것을 만든 범위(컴포넌트 등)가 소유하고, 그 범위가 사라질 때 함께 해제된다.
 - [초안] `Binding<T>` 자리에 반응형 값을 읽지 않는 식을 쓰면 한 번만 계산된다.
 
-## 12. 미정 항목
-- 복사 가능한 타입(`Copy`)의 정의: 정수, 실수, `bool`, 핸들 타입 등은 이동 대신 복사된다는 규칙과 그 표시 방법
-- `Signal` 갱신의 편의 문법 (`count += 1` 등)
+### 11.3 Signal 갱신 [확정: 연산자 trait으로 처리, 새 문법 없음]
+```
+count += 1          // same as count.set(count.get() + 1)
+count = 0           // same as count.set(0)
+```
+- `Signal<T>`가 대입과 복합 대입 연산자 trait을 구현해서 위처럼 쓸 수 있다.
+- [초안] `=`의 오버로딩은 `Signal` 같은 핸들 타입처럼 "가리키는 값을 바꾸는" 타입에만 허용하는 trait(`Assign`)으로 한다.
+
+## 12. 복사 가능한 타입 [확정: `Copy`는 명시적으로 붙임]
+```
+struct Point: Copy {
+    x: f32
+    y: f32
+}
+
+let a = Point { x: 1.0; y: 2.0 }
+let b = a          // copied, a is still usable
+```
+- 기본 타입(정수, 실수, `bool`, `char`)과 원시 포인터 `*T`는 `Copy`다. 이동 대신 복사된다.
+- 사용자 타입은 `Copy`를 명시적으로 붙여야 하고, 모든 필드가 `Copy`여야 한다 (아니면 컴파일 오류).
+- 소멸자가 있는 타입은 `Copy`가 될 수 없다.
+- [초안] 표준 라이브러리의 `Signal<T>`는 `Copy`다.
+- [초안] `Copy`가 아닌 값을 복제하려면 `Clone` trait의 `.clone()`을 명시적으로 호출한다.
+
+## 13. 미정 항목
 - 표준 라이브러리 구성
 - JIT/핫 리로드

@@ -46,11 +46,25 @@ GUI, 3D, 일반 로직, 시스템 프로그래밍까지 C++이 다룰 수 있는
 17. 선언형 작성: GUI/3D 전용 문법 없이 범용 기능 두 가지로 한다.
     - 블록 초기화 `Type { field: value; Child { ... } }`. 이름 없는 값은 자식 trait을 구현한 타입의 자식이 된다.
     - 반응형 값 `Signal<T>`. `Binding<T>` 필드에 쓴 식은 읽은 Signal이 바뀌면 다시 계산되고, 양방향은 `bind`로 명시한다.
+    - Signal 갱신은 연산자 trait으로 `count += 1`, `count = 0`처럼 쓴다.
+18. 복사: 기본 타입과 원시 포인터는 `Copy`. 사용자 타입은 `struct Point: Copy`처럼 명시하고 모든 필드가 `Copy`여야 한다. 소멸자가 있는 타입은 `Copy` 불가.
+19. 표준 라이브러리 구성: `core`(OS 없이 동작), `std`(파일, 스레드, 네트워크), `gui`, `gfx`(3D), `platform`(창, 입력). GPU 계층은 WebGPU(`webgpu.h`), 네이티브는 Dawn, 웹은 Emscripten.
+20. 빌드/실행: 배포는 AOT 컴파일. 개발 중에는 LLVM ORC JIT로 실행하고 바뀐 함수만 다시 컴파일해 교체하는 핫 리로드를 지원한다 (컴파일러가 동작한 뒤 구현).
 
 언어 정의의 세부와 각 항목의 상태([확정]/[초안]/[미정])는 `docs/language.md`가 기준이다. 문법을 바꾸면 이 문서를 먼저 고친다.
 
 ## 아직 정하지 않은 것
 
 - 문법 세부: `docs/language.md`의 미정 항목 참고
-- 표준 라이브러리 구성과 GPU/플랫폼 계층 (WebGPU 등)
-- 개발 중 빠른 반복을 위한 JIT/핫 리로드 지원 여부
+- 2D 렌더러를 직접 구현할지, Skia Graphite(Dawn 위)를 쓸지
+- 물리 엔진 등 3D 표준 라이브러리 세부
+
+## 로드맵 [초안]
+
+1. 컴파일러 1단계: Lexer -> Parser/AST -> 의미 분석 -> LLVM IR 생성. 목표는 `hana run hello.hana`로 문자열 출력
+2. 언어 코어 확장: struct, enum, trait, 제네릭, 인자 전달 방식, 클로저, 모듈
+3. `core` / `std` 표준 라이브러리, C ABI 연동
+4. JIT 실행과 핫 리로드
+5. `platform`, `gui` (WebGPU 2D 렌더러)
+6. `gfx` (3D)
+7. WASM, 모바일 타깃
