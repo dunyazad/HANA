@@ -1,0 +1,15 @@
+{
+  average: fn<f64(total: i64, count: i32)> total as f64 / count as f64,
+
+  main: fn '''
+    let small: i32 = 1000
+    print(small as u8)
+    print(-1 as u32)
+    print(7 as f64 / 2.0)
+    print(3.99 as i32)
+    print(1e20 as i32)
+    print('A' as u32)
+    print(true as u8)
+    print(average(10, 4))
+  ''',
+}

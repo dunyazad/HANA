@@ -1,0 +1,13 @@
+{
+  fib: fn<i64(n: i64)> '''
+    if n < 2: return n
+    return fib(n - 1) + fib(n - 2)
+  ''',
+
+  main: fn '''
+    var i: i64 = 0
+    while i < 10:
+      print(f"fib({i}) = {fib(i)}")
+      i += 1
+  ''',
+}

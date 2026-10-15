@@ -1,0 +1,10 @@
+{
+  main: fn '''
+    let = 1
+    let y 2
+    if ok
+      pass
+    let fine = 3
+  ''',
+  broken: fn<i32(a)> a,
+}

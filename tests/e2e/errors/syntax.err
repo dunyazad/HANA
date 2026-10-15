@@ -1,0 +1,4 @@
+syntax.hana:3:9: error: expected a variable name, found '='
+syntax.hana:4:11: error: 'let' needs an initial value
+syntax.hana:5:10: error: expected ':' to start the block, found end of line
+syntax.hana:9:19: error: expected ':' and a type after the parameter name

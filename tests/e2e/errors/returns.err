@@ -1,0 +1,2 @@
+error: function 'sign' must return a value of type 'i32' on every path
+returns.hana:7:5: error: 'break' outside of a loop

@@ -30,3 +30,39 @@
 - 범위는 GUI부터 시스템 프로그래밍까지. 네이티브 컴파일(LLVM), 정적 타입 + 추론, GC 없는 RAII + 이동, 참조 대신 인자 전달 방식(`inout`, `sink`).
 - 3D 수학 타입(`v2` `v3` `v4` `m33` `m44`)을 기본 제공. 사용자 타입은 표준 타입과 같은 지위.
 - C 헤더 직접 가져오기, C++ 접착 코드 자동 생성, 동적 라이브러리 세 방식 지원.
+
+## 디렉터리 구조
+
+```
+hana/
+  CMakeLists.txt
+  docs/
+    language.md   언어 정의 (14절: 현재 컴파일러 구현 범위)
+    decisions.md  설계 결정 기록
+  src/
+    support/   SourceLocation, 진단 메시지(DiagnosticEngine), UTF-8
+    lang/      OuterParser(JSON 층), CodeLexer/CodeParser(''' 코드), AST, Type, Symbol, Sema (hana::lang)
+    codegen/   LLVM IR 생성, 최적화, 오브젝트 파일 출력 (hana::codegen)
+    driver/    check / build / run 파이프라인, 링커 호출 (hana::driver)
+    cli/       hana 실행 파일
+  runtime/     컴파일된 프로그램에 링크되는 C 런타임 (출력, panic)
+  examples/
+  tests/
+    unit/        OuterParser/CodeLexer/CodeParser/Sema 단위 테스트
+    e2e/run/     <이름>.hana 를 실행해 .out(표준 출력), .status(종료 코드), .stderr(포함 문구), .flags(hana run 옵션) 확인
+    e2e/errors/  <이름>.hana 의 진단 메시지가 <이름>.err 의 각 줄을 포함하는지 확인
+```
+
+## 빌드와 테스트
+
+필요: CMake 3.20+, C++20 컴파일러, LLVM 18 개발 패키지 (Ubuntu: `llvm-18-dev`), 링크용 `cc`.
+
+```
+cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+cmake --build build
+ctest --test-dir build
+./build/hana run examples/fib.hana
+./build/hana run -O examples/fib.hana
+./build/hana check --tokens --ast examples/fib.hana
+./build/hana build --emit-ir examples/fib.hana
+```

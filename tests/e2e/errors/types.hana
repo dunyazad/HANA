@@ -1,0 +1,10 @@
+{
+  takes_i64: fn<(x: i64)> pass,
+  main: fn '''
+    let a: i32 = 1
+    takes_i64(a)
+    let b = true + 1
+    let c: u8 = 300
+    let d = undefined_name
+  ''',
+}

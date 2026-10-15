@@ -1,0 +1,13 @@
+{
+  greet: fn<(name: str)> print(f"Hello, {name}!"),
+
+  main: fn '''
+    greet("HANA")
+    write("no newline, ")
+    print("braces {stay} in plain strings")
+    print(f"escaped \{braces\} and 100%")
+    print("tab:\tend, json A, braced \u{D55C}")
+    let c = 'Z'
+    print(f"char {c} {'\u{AE00}'}")
+  ''',
+}

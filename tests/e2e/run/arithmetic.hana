@@ -1,0 +1,14 @@
+{
+  main: fn '''
+    let a = 7
+    let b = 3
+    print(f"{a + b} {a - b} {a * b} {a / b} {a % b}")
+    print(f"{-a / b} {-a % b}")
+    let big: i64 = 9_000_000_000
+    print(f"{big * 2}")
+    print(f"{0xff} {0b1010} {1_000}")
+    print(f"{1 << 4} {256 >> 4} {6 & 3} {6 | 3} {6 ^ 3} {~0}")
+    let x: u8 = 250
+    print(f"{x + 5}")
+  ''',
+}

@@ -1,0 +1,14 @@
+{
+  loud: fn<bool(value: bool)> '''
+    print(f"evaluated {value}")
+    return value
+  ''',
+
+  main: fn '''
+    let a = loud(false) and loud(true)
+    print(f"and: {a}")
+    let b = loud(true) or loud(false)
+    print(f"or: {b}")
+    print(f"{not a} {3 < 4} {3 >= 4} {'a' < 'b'} {not 1 == 2}")
+  ''',
+}

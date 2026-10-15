@@ -1,0 +1,7 @@
+{
+  main: fn '''
+    let x: u8 = 250
+    print("before")
+    print(x + 10)
+  ''',
+}

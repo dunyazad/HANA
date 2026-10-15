@@ -1,0 +1,7 @@
+{
+  divide: fn<i32(a: i32, b: i32)> a / b,
+  main: fn '''
+    print("before")
+    print(divide(1, 0))
+  ''',
+}

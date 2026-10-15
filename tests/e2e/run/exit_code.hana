@@ -1,0 +1,6 @@
+{
+  main: fn<i32()> '''
+    print("returning 7")
+    return 7
+  ''',
+}

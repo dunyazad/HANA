@@ -1,0 +1,29 @@
+{
+  classify: fn<str(n: i32)> '''
+    if n < 0:
+      return "negative"
+    elif n == 0:
+      return "zero"
+    return "positive"
+  ''',
+
+  main: fn '''
+    var i = 0
+    var sum = 0
+    while i < 10:
+      i += 1
+      if i % 2 == 0: continue
+      sum += i
+    print(f"sum of odd numbers up to 10: {sum}")
+
+    var n = 0
+    while true:
+      n += 1
+      if n >= 5: break
+    print(f"loop stopped at {n}")
+
+    print(classify(-3))
+    print(classify(0))
+    print(classify(8))
+  ''',
+}

@@ -1,0 +1,35 @@
+{
+  fib: fn<i64(n: i64)> '''
+    if n < 2: return n
+    return fib(n - 1) + fib(n - 2)
+  ''',
+
+  swap: fn<(inout a: i32, inout b: i32)> '''
+    let t = a
+    a = b
+    b = t
+  ''',
+
+  double: fn<i32(x: i32)> x * 2,
+
+  bigger: fn<i32(a: i32, b: i32)> a if a > b else b,
+
+  add_twice: fn {
+    in: { inout total: i32, amount: i32 },
+    do: '''
+      total += amount
+      total += amount
+    ''',
+  },
+
+  main: fn '''
+    print(f"fib(20) = {fib(20)}")
+    var x = 1
+    var y = 2
+    swap(&x, &y)
+    print(f"x = {x}, y = {y}")
+    var total = 10
+    add_twice(&total, 5)
+    print(f"total = {total}, double = {double(21)}, bigger = {bigger(3, 9)}")
+  ''',
+}

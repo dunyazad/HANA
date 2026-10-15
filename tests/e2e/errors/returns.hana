@@ -1,0 +1,9 @@
+{
+  sign: fn<i32(n: i32)> '''
+    if n > 0:
+      return 1
+  ''',
+  main: fn '''
+    break
+  ''',
+}

@@ -1,0 +1,7 @@
+{
+  main: fn '''
+    if true:
+        pass
+      pass
+  ''',
+}
