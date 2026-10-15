@@ -1,5 +1,7 @@
 #include "codegen/codegen.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -41,14 +43,14 @@ std::string mangle_function_name(const std::string& name)
     return "hana." + name;
 }
 
-// Read parameters of a struct type that is not Copy are passed by pointer,
+// Read parameters of a struct or enum type that is not Copy are passed by pointer,
 // so the value is not copied; inout parameters always are. Everything else,
 // Copy values included, is passed by value: a Copy argument is read before
 // the call, so it stays correct when it overlaps an inout argument.
 bool passed_by_pointer(ParamConvention convention, const Type* type)
 {
     return convention == ParamConvention::Inout ||
-           (convention == ParamConvention::Read && type->is_struct() && !is_copy_type(type));
+           (convention == ParamConvention::Read && type->is_user() && !is_copy_type(type));
 }
 
 struct LoopTargets {
@@ -77,7 +79,7 @@ public:
         for (const auto& function : ast.functions) {
             declare_function(*function);
         }
-        for (const auto& decl : ast.structs) {
+        for (const auto& decl : ast.types) {
             for (const auto& method : decl->methods) {
                 declare_function(*method);
             }
@@ -85,7 +87,7 @@ public:
         for (const auto& function : ast.functions) {
             emit_function(*function);
         }
-        for (const auto& decl : ast.structs) {
+        for (const auto& decl : ast.types) {
             for (const auto& method : decl->methods) {
                 emit_function(*method);
             }
@@ -114,7 +116,8 @@ private:
         case TypeKind::Float:
             return type->bits == 32 ? llvm::Type::getFloatTy(context_)
                                     : llvm::Type::getDoubleTy(context_);
-        case TypeKind::Struct: return struct_type(*type->struct_info);
+        case TypeKind::Struct: return struct_type(*type->user);
+        case TypeKind::Enum: return enum_type(*type->user);
         case TypeKind::Error: break;
         }
         return llvm::Type::getVoidTy(context_);
@@ -122,17 +125,57 @@ private:
 
     // Structs cannot contain themselves (checked by semantic analysis), so
     // the field types are complete when the body is set.
-    llvm::StructType* struct_type(const StructInfo& info)
+    llvm::StructType* struct_type(const UserType& info)
     {
-        if (auto it = struct_types_.find(&info); it != struct_types_.end()) {
+        if (auto it = user_types_.find(&info); it != user_types_.end()) {
             return it->second;
         }
         std::vector<llvm::Type*> fields;
-        for (const StructField& field : info.fields) {
+        for (const FieldInfo& field : info.fields) {
             fields.push_back(llvm_type(field.type));
         }
         llvm::StructType* type = llvm::StructType::create(context_, fields, info.name);
-        struct_types_[&info] = type;
+        user_types_[&info] = type;
+        return type;
+    }
+
+    // An enum value is { i32 tag, [N x i64] payload } where the payload holds
+    // the fields of the largest case. No type needs more than 8-byte
+    // alignment yet, so i64 elements align every case.
+    llvm::StructType* enum_type(const UserType& info)
+    {
+        if (auto it = user_types_.find(&info); it != user_types_.end()) {
+            return it->second;
+        }
+        std::uint64_t payload_size = 0;
+        for (const EnumCase& entry : info.cases) {
+            if (!entry.fields.empty()) {
+                payload_size = std::max<std::uint64_t>(
+                    payload_size, module_.getDataLayout().getTypeAllocSize(case_type(info, entry)));
+            }
+        }
+        std::vector<llvm::Type*> fields{builder_.getInt32Ty()};
+        if (payload_size > 0) {
+            fields.push_back(llvm::ArrayType::get(builder_.getInt64Ty(), (payload_size + 7) / 8));
+        }
+        llvm::StructType* type = llvm::StructType::create(context_, fields, info.name);
+        user_types_[&info] = type;
+        return type;
+    }
+
+    // The fields of one case, stored at the start of the payload.
+    llvm::StructType* case_type(const UserType& info, const EnumCase& entry)
+    {
+        if (auto it = case_types_.find(&entry); it != case_types_.end()) {
+            return it->second;
+        }
+        std::vector<llvm::Type*> fields;
+        for (const FieldInfo& field : entry.fields) {
+            fields.push_back(llvm_type(field.type));
+        }
+        llvm::StructType* type =
+            llvm::StructType::create(context_, fields, info.name + "." + entry.name);
+        case_types_[&entry] = type;
         return type;
     }
 
@@ -265,6 +308,7 @@ private:
         case StmtKind::Return: emit_return(static_cast<const ReturnStmt&>(stmt)); break;
         case StmtKind::If: emit_if(static_cast<const IfStmt&>(stmt)); break;
         case StmtKind::While: emit_while(static_cast<const WhileStmt&>(stmt)); break;
+        case StmtKind::Match: emit_match(*static_cast<const MatchStmt&>(stmt).match, false); break;
         case StmtKind::Break: builder_.CreateBr(loops_.back().break_block); break;
         case StmtKind::Continue: builder_.CreateBr(loops_.back().continue_block); break;
         case StmtKind::Pass: break;
@@ -344,6 +388,158 @@ private:
         builder_.SetInsertPoint(end_block);
     }
 
+    // -----------------------------------------------------------------------
+    // match
+
+    // Arms are tried in order: the pattern test, then the bindings, then the
+    // guard. Semantic analysis guarantees some arm matches. An expression
+    // match stores the arm's value in a slot and returns it.
+    llvm::Value* emit_match(const MatchExpr& match, bool is_expression)
+    {
+        const Type* type = match.subject->type;
+        llvm::Value* subject = emit_subject_address(*match.subject);
+        llvm::AllocaInst* result = is_expression ? create_entry_alloca(match.type, "match") : nullptr;
+        auto* end_block = llvm::BasicBlock::Create(context_, "match.end");
+        for (const MatchArm& arm : match.arms) {
+            auto* next_block = llvm::BasicBlock::Create(context_, "match.next", current_function_);
+            emit_pattern_test(*arm.pattern, subject, type, next_block);
+            emit_pattern_bindings(*arm.pattern, subject, type);
+            if (arm.guard) {
+                continue_if(emit_expr(*arm.guard), next_block);
+            }
+            if (is_expression) {
+                builder_.CreateStore(emit_expr(*arm.value), result);
+            } else {
+                emit_block(arm.body);
+            }
+            branch_if_open(end_block);
+            builder_.SetInsertPoint(next_block);
+        }
+        builder_.CreateUnreachable();
+        end_block->insertInto(current_function_);
+        builder_.SetInsertPoint(end_block);
+        return is_expression ? builder_.CreateLoad(llvm_type(match.type), result) : nullptr;
+    }
+
+    // A place is matched where it is; a temporary is stored first.
+    llvm::Value* emit_subject_address(const Expr& subject)
+    {
+        if (place_of(subject)) {
+            return emit_address(subject);
+        }
+        llvm::AllocaInst* temp = create_entry_alloca(subject.type, "subject");
+        builder_.CreateStore(emit_expr(subject), temp);
+        return temp;
+    }
+
+    // Branches to 'fail' unless the value at 'address' matches the pattern;
+    // continues in a new block when it does.
+    void emit_pattern_test(const Pattern& pattern, llvm::Value* address, const Type* type,
+                           llvm::BasicBlock* fail)
+    {
+        switch (pattern.kind) {
+        case PatternKind::Wildcard:
+        case PatternKind::Binding: return;
+        case PatternKind::Literal: {
+            llvm::Value* value = builder_.CreateLoad(llvm_type(type), address);
+            continue_if(builder_.CreateICmpEQ(value, pattern_constant(*pattern.value, type)), fail);
+            return;
+        }
+        case PatternKind::Range: emit_range_test(pattern, address, type, fail); return;
+        case PatternKind::Case: {
+            const UserType& info = *type->user;
+            llvm::StructType* enum_llvm = enum_type(info);
+            llvm::Value* tag = builder_.CreateLoad(builder_.getInt32Ty(),
+                                                   builder_.CreateStructGEP(enum_llvm, address, 0));
+            continue_if(builder_.CreateICmpEQ(
+                            tag, builder_.getInt32(static_cast<std::uint32_t>(pattern.case_index))),
+                        fail);
+            const EnumCase& entry = info.cases[static_cast<std::size_t>(pattern.case_index)];
+            for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+                emit_pattern_test(*pattern.arguments[i], case_field_address(info, entry, address, i),
+                                  entry.fields[i].type, fail);
+            }
+            return;
+        }
+        }
+    }
+
+    void emit_range_test(const Pattern& pattern, llvm::Value* address, const Type* type,
+                         llvm::BasicBlock* fail)
+    {
+        const bool is_signed = type->is_integer() && type->is_signed;
+        llvm::Value* value = builder_.CreateLoad(llvm_type(type), address);
+        llvm::Value* low = pattern_constant(*pattern.value, type);
+        llvm::Value* high = pattern_constant(*pattern.end, type);
+        continue_if(is_signed ? builder_.CreateICmpSGE(value, low) : builder_.CreateICmpUGE(value, low),
+                    fail);
+        llvm::Value* below = nullptr;
+        if (pattern.inclusive) {
+            below = is_signed ? builder_.CreateICmpSLE(value, high) : builder_.CreateICmpULE(value, high);
+        } else {
+            below = is_signed ? builder_.CreateICmpSLT(value, high) : builder_.CreateICmpULT(value, high);
+        }
+        continue_if(below, fail);
+    }
+
+    // A name bound by a pattern holds the matched value as it was when the
+    // arm was chosen.
+    void emit_pattern_bindings(const Pattern& pattern, llvm::Value* address, const Type* type)
+    {
+        if (pattern.kind == PatternKind::Binding) {
+            llvm::AllocaInst* slot = create_entry_alloca(type, pattern.name);
+            builder_.CreateStore(builder_.CreateLoad(llvm_type(type), address), slot);
+            addresses_[pattern.symbol] = slot;
+            return;
+        }
+        if (pattern.kind != PatternKind::Case) {
+            return;
+        }
+        const UserType& info = *type->user;
+        const EnumCase& entry = info.cases[static_cast<std::size_t>(pattern.case_index)];
+        for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+            emit_pattern_bindings(*pattern.arguments[i], case_field_address(info, entry, address, i),
+                                  entry.fields[i].type);
+        }
+    }
+
+    llvm::Value* case_field_address(const UserType& info, const EnumCase& entry,
+                                    llvm::Value* address, std::size_t index)
+    {
+        llvm::Value* payload = builder_.CreateStructGEP(enum_type(info), address, 1);
+        return builder_.CreateStructGEP(case_type(info, entry), payload,
+                                        static_cast<unsigned>(index));
+    }
+
+    // Literal patterns are integers (possibly negated), chars and bools.
+    llvm::Constant* pattern_constant(const Expr& literal, const Type* type)
+    {
+        switch (literal.kind) {
+        case ExprKind::BoolLiteral:
+            return builder_.getInt1(static_cast<const BoolLiteralExpr&>(literal).value);
+        case ExprKind::CharLiteral:
+            return builder_.getInt32(static_cast<const CharLiteralExpr&>(literal).value);
+        case ExprKind::Unary: {
+            const auto& operand =
+                static_cast<const IntLiteralExpr&>(*static_cast<const UnaryExpr&>(literal).operand);
+            auto* int_type = llvm::cast<llvm::IntegerType>(llvm_type(type));
+            llvm::APInt value(int_type->getBitWidth(), operand.value);
+            value.negate();
+            return llvm::ConstantInt::get(int_type, value);
+        }
+        default:
+            return llvm::ConstantInt::get(llvm_type(type),
+                                          static_cast<const IntLiteralExpr&>(literal).value);
+        }
+    }
+
+    void continue_if(llvm::Value* condition, llvm::BasicBlock* fail)
+    {
+        auto* next = llvm::BasicBlock::Create(context_, "match.ok", current_function_);
+        builder_.CreateCondBr(condition, next, fail);
+        builder_.SetInsertPoint(next);
+    }
+
     void branch_if_open(llvm::BasicBlock* target)
     {
         if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
@@ -380,6 +576,7 @@ private:
         case ExprKind::StructLiteral:
             return emit_struct_literal(static_cast<const StructLiteralExpr&>(expr));
         case ExprKind::Member: return emit_member(static_cast<const MemberExpr&>(expr));
+        case ExprKind::Match: return emit_match(static_cast<const MatchExpr&>(expr), true);
         case ExprKind::Null:
         case ExprKind::Error:
         case ExprKind::Index:
@@ -403,6 +600,9 @@ private:
     // temporary value is extracted from it.
     llvm::Value* emit_member(const MemberExpr& member)
     {
+        if (member.case_index >= 0) {
+            return emit_enum_value(*member.type->user, member.case_index, {});
+        }
         if (place_of(member)) {
             return builder_.CreateLoad(llvm_type(member.type), emit_address(member), member.member);
         }
@@ -410,23 +610,56 @@ private:
                                            static_cast<unsigned>(member.field_index));
     }
 
-    // Written fields run in source order, then the defaults of the fields
-    // left out, in declaration order.
     llvm::Value* emit_struct_literal(const StructLiteralExpr& lit)
     {
-        const StructInfo& info = *lit.type->struct_info;
+        const UserType& info = *lit.type->user;
+        if (lit.case_index >= 0) {
+            const EnumCase& entry = info.cases[static_cast<std::size_t>(lit.case_index)];
+            return emit_enum_value(info, lit.case_index, emit_literal_fields(lit, entry.fields));
+        }
+        llvm::Value* value = llvm::PoisonValue::get(llvm_type(lit.type));
+        const std::vector<llvm::Value*> fields = emit_literal_fields(lit, info.fields);
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            value = builder_.CreateInsertValue(value, fields[i], static_cast<unsigned>(i));
+        }
+        return value;
+    }
+
+    // Written fields run in source order, then the defaults of the fields
+    // left out, in declaration order. Returns the values in declaration
+    // order.
+    std::vector<llvm::Value*> emit_literal_fields(const StructLiteralExpr& lit,
+                                                  const std::vector<FieldInfo>& fields)
+    {
         std::vector<llvm::Value*> written;
         for (const auto& field : lit.fields) {
             written.push_back(emit_expr(*field.value));
         }
-        llvm::Value* value = llvm::PoisonValue::get(llvm_type(lit.type));
-        for (std::size_t i = 0; i < info.fields.size(); ++i) {
+        std::vector<llvm::Value*> values;
+        for (std::size_t i = 0; i < fields.size(); ++i) {
             const int index = lit.field_order[i];
-            llvm::Value* field = index >= 0 ? written[static_cast<std::size_t>(index)]
-                                            : emit_expr(*info.fields[i].default_value);
-            value = builder_.CreateInsertValue(value, field, static_cast<unsigned>(i));
+            values.push_back(index >= 0 ? written[static_cast<std::size_t>(index)]
+                                        : emit_expr(*fields[i].default_value));
         }
-        return value;
+        return values;
+    }
+
+    llvm::Value* emit_enum_value(const UserType& info, int case_index,
+                                 const std::vector<llvm::Value*>& fields)
+    {
+        llvm::StructType* type = enum_type(info);
+        llvm::AllocaInst* slot = create_entry_alloca(&info.type, "enum");
+        builder_.CreateStore(builder_.getInt32(static_cast<std::uint32_t>(case_index)),
+                             builder_.CreateStructGEP(type, slot, 0));
+        if (!fields.empty()) {
+            const EnumCase& entry = info.cases[static_cast<std::size_t>(case_index)];
+            llvm::Value* payload = llvm::PoisonValue::get(case_type(info, entry));
+            for (std::size_t i = 0; i < fields.size(); ++i) {
+                payload = builder_.CreateInsertValue(payload, fields[i], static_cast<unsigned>(i));
+            }
+            builder_.CreateStore(payload, builder_.CreateStructGEP(type, slot, 1));
+        }
+        return builder_.CreateLoad(type, slot);
     }
 
     // An argument passed by pointer: a place passes its own address, any
@@ -874,7 +1107,8 @@ private:
     llvm::Function* current_function_ = nullptr;
     const Type* current_return_type_ = nullptr;
     std::unordered_map<const FunctionSymbol*, llvm::Function*> functions_;
-    std::unordered_map<const StructInfo*, llvm::StructType*> struct_types_;
+    std::unordered_map<const UserType*, llvm::StructType*> user_types_;
+    std::unordered_map<const EnumCase*, llvm::StructType*> case_types_;
     std::unordered_map<const VarSymbol*, llvm::Value*> addresses_;
     std::vector<LoopTargets> loops_;
 };

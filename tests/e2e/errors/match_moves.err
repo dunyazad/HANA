@@ -1,0 +1,5 @@
+match_moves.hana:12:20: error: cannot move 's' because 'm' is a read-only parameter; declare it 'sink' to take ownership
+match_moves.hana:20:13: error: use of moved value 'a'
+match_moves.hana:18:20: note: 'a' was moved here
+match_moves.hana:25:15: error: use of 's' after 'b' was moved
+match_moves.hana:24:17: note: 'b' was moved here

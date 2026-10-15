@@ -47,16 +47,20 @@ private:
 
     // Declarations
     void declare_intrinsics();
-    void declare_struct(StructDecl& decl);
-    void declare_struct_fields(StructDecl& decl);
-    void check_struct_containment(const StructDecl& decl);
-    bool contains_struct(const StructInfo& outer, const StructInfo& inner,
-                         std::vector<const StructInfo*>& visiting) const;
-    void check_copy_struct(const StructDecl& decl);
-    void check_field_defaults(StructDecl& decl);
+    void declare_type(TypeDecl& decl);
+    void declare_type_fields(TypeDecl& decl);
+    void declare_fields(std::vector<FieldDecl>& decls, std::vector<FieldInfo>& fields,
+                        const std::string& owner);
+    static std::vector<const FieldInfo*> value_fields(const UserType& info);
+    void check_type_containment(const TypeDecl& decl);
+    bool contains_type(const UserType& outer, const UserType& inner,
+                       std::vector<const UserType*>& visiting) const;
+    void check_copy_type(const TypeDecl& decl);
+    void check_field_defaults(TypeDecl& decl);
+    void check_defaults(std::vector<FieldDecl>& decls, const std::vector<FieldInfo>& fields);
     FunctionSymbol& create_function_symbol(FnDecl& function, std::string name);
     void declare_function(FnDecl& function);
-    void declare_method(StructDecl& decl, FnDecl& method);
+    void declare_method(TypeDecl& decl, FnDecl& method);
     void check_main_signature(const FunctionSymbol& symbol);
     void check_function_body(FnDecl& function);
     void check_body_once(FnDecl& function);
@@ -80,6 +84,17 @@ private:
     bool check_return(ReturnStmt& ret);
     bool check_if(IfStmt& stmt);
     bool check_while(WhileStmt& stmt);
+
+    // match (sema_match.cpp)
+    bool check_match_statement(MatchStmt& stmt);
+    const Type* check_match_expression(MatchExpr& match, const Type* expected);
+    const Type* check_match_subject(MatchExpr& match);
+    const Type* check_arm_value(MatchArm& arm, const Type* subject, const Type* expected);
+    void check_arm_head(MatchArm& arm, const Type* subject);
+    void check_pattern(Pattern& pattern, const Type* subject);
+    void check_case_pattern(Pattern& pattern, const Type* subject);
+    void check_literal_pattern(Pattern& pattern, const Type* subject);
+    void check_match_coverage(const MatchExpr& match, const Type* subject);
     bool check_jump(Stmt& stmt, const char* keyword);
     void check_condition(Expr& condition);
     const Type* check_assignment_target(Expr& target);
@@ -98,13 +113,17 @@ private:
     const Type* check_binary_operands(BinaryExpr& binary, const Type* expected);
     const Type* binary_result_type(BinaryOp op, const Type* operand, const SourceLocation& location);
     const Type* check_struct_literal(StructLiteralExpr& lit);
-    void report_missing_fields(const StructLiteralExpr& lit, const StructInfo& info);
+    const std::vector<FieldInfo>* literal_fields(StructLiteralExpr& lit);
+    void report_missing_fields(const StructLiteralExpr& lit, const std::vector<FieldInfo>& fields,
+                               const std::string& written);
+    static std::string type_name_hint(const UserType& info);
     const Type* check_member(MemberExpr& member);
-    const StructInfo* static_struct_name(const Expr& object) const;
+    const Type* check_static_member(MemberExpr& member, const UserType& info);
+    const UserType* static_type_name(const Expr& object) const;
     const Type* check_call(CallExpr& call);
     const Type* check_function_call(CallExpr& call, NameExpr& callee);
     const Type* check_method_call(CallExpr& call, MemberExpr& callee);
-    const FunctionSymbol* find_static_function(MemberExpr& callee, const StructInfo& info);
+    const FunctionSymbol* find_static_function(MemberExpr& callee, const UserType& info);
     const FunctionSymbol* find_method(MemberExpr& callee, const Type* receiver);
     std::optional<Place> check_receiver(MemberExpr& callee, const FunctionSymbol& method);
     const Type* check_intrinsic_call(CallExpr& call, const FunctionSymbol& function);
@@ -126,7 +145,7 @@ private:
                                  bool is_mutable, const SourceLocation& location);
     const VarSymbol* lookup_var(const std::string& name) const;
     const FunctionSymbol* lookup_function(const std::string& name) const;
-    StructInfo* lookup_struct(const std::string& name) const;
+    UserType* lookup_type(const std::string& name) const;
 
     struct PendingLet {
         const LetStmt* let;
@@ -137,7 +156,7 @@ private:
     DiagnosticEngine* diagnostics_;
     std::unique_ptr<Program> program_;
     std::unordered_map<std::string, const FunctionSymbol*> functions_;
-    std::unordered_map<std::string, StructInfo*> structs_;
+    std::unordered_map<std::string, UserType*> types_;
     std::vector<std::unordered_map<std::string, const VarSymbol*>> scopes_;
     std::vector<LoopContext> loops_;
     const Type* return_type_ = nullptr;

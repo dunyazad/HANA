@@ -372,3 +372,64 @@ TEST(sema_copy_read_may_overlap_inout)
     EXPECT(r->error_count() == 1);
     EXPECT(r->has_error("'p' is passed as inout and also read"));
 }
+
+TEST(sema_enum_program)
+{
+    auto r = check(R"({
+  Shape: enum {
+    Circle: { r: f64 },
+    Empty: {},
+    area: fn<f64(self)> '''
+      return match self:
+        Circle(r): r * r
+        Empty: 0.0
+    ''',
+  },
+  f: fn<f64()> '''
+    let s = Shape.Circle { r: 2.0 }
+    let e = Shape.Empty
+    return s.area() + e.area()
+  ''',
+})");
+    EXPECT(!r->diagnostics.has_errors());
+}
+
+TEST(sema_match_coverage)
+{
+    const char* head = "{ E: enum { A: {}, B: { x: i32 } }, f: fn<(e: E)> '''\n  match e:\n";
+    EXPECT(check(std::string(head) + "    A: pass\n''' }")->has_error("does not cover 'B'"));
+    EXPECT(!check(std::string(head) + "    A: pass\n    B(_): pass\n''' }")->diagnostics.has_errors());
+    // A guarded arm or a refutable field pattern does not cover the case.
+    EXPECT(check(std::string(head) + "    A: pass\n    B(x) if x > 0: pass\n''' }")
+               ->has_error("does not cover 'B'"));
+    EXPECT(check(std::string(head) + "    A: pass\n    B(1): pass\n''' }")
+               ->has_error("does not cover 'B'"));
+    EXPECT(check("{ f: fn<(n: i32)> '''\n  match n:\n    1: pass\n''' }")->has_error("needs a final '_'"));
+}
+
+TEST(sema_match_expression_types)
+{
+    auto r = check("{ f: fn<i64(n: i32)> '''\n  return match n:\n    0: 1\n    _: 2\n''' }");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(check("{ f: fn<(n: i32)> '''\n  let x = match n:\n    0: 1\n    _: true\n''' }")
+               ->has_error("different types"));
+}
+
+TEST(sema_match_statement_terminates)
+{
+    EXPECT(!check("{ f: fn<i32(b: bool)> '''\n  match b:\n    true: return 1\n    false: return 2\n''' }")
+                ->diagnostics.has_errors());
+}
+
+TEST(sema_match_binding_is_part_of_subject)
+{
+    const char* decl = "M: enum { T: { s: str }, Q: {} }, eat: fn<(sink s: str)> pass, "
+                       "eat_m: fn<(sink m: M)> pass";
+    EXPECT(check(std::string("{ ") + decl + ", f: fn<(m: M)> '''\n  match m:\n    T(s): eat(s)\n    Q: pass\n''' }")
+               ->has_error("read-only parameter"));
+    EXPECT(!check(std::string("{ ") + decl + ", f: fn<(m: M)> '''\n  match m:\n    T(s): print(s)\n    Q: pass\n''' }")
+                ->diagnostics.has_errors());
+    EXPECT(check(std::string("{ ") + decl +
+                 ", f: fn<(sink m: M)> '''\n  match m:\n    T(s):\n      eat_m(m)\n      print(s)\n    Q: pass\n''' }")
+               ->has_error("use of 's' after 'm' was moved"));
+}

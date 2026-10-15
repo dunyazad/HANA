@@ -142,22 +142,22 @@ bool OuterParser::parse_entry(Module& module)
         }
         return false;
     }
-    if (looking_at_word("struct")) {
-        auto decl = parse_struct(*key, key_location, is_pub);
+    if (looking_at_word("struct") || looking_at_word("enum")) {
+        auto decl = parse_type_decl(*key, key_location, is_pub, looking_at_word("enum"));
         if (decl) {
-            module.structs.push_back(std::move(decl));
+            module.types.push_back(std::move(decl));
             return true;
         }
         return false;
     }
-    for (const char* word : {"enum", "trait", "extend"}) {
+    for (const char* word : {"trait", "extend"}) {
         if (looking_at_word(word)) {
             error(location_, std::string("'") + word + "' is not supported yet");
             return false;
         }
     }
-    error(key_location, "'" + *key + "': only functions, structs and 'use' are supported at the "
-                                     "top level for now");
+    error(key_location, "'" + *key + "': only functions, structs, enums and 'use' are supported "
+                                     "at the top level for now");
     return false;
 }
 
@@ -205,18 +205,22 @@ void OuterParser::parse_use(const SourceLocation& location)
 }
 
 // ---------------------------------------------------------------------------
-// Structs
+// Structs and enums
 
-// 'struct' ['copy'] '{' members '}' where a member is a field
-// 'name: Type [= default]' or a method 'name: fn...'.
-std::unique_ptr<StructDecl> OuterParser::parse_struct(std::string name,
-                                                      const SourceLocation& location, bool is_pub)
+// ('struct' | 'enum') ['copy'] '{' members '}'. A struct member is a field
+// 'name: Type [= default]', an enum member a case 'Name: { fields }';
+// both may have methods 'name: fn...'.
+std::unique_ptr<TypeDecl> OuterParser::parse_type_decl(std::string name,
+                                                       const SourceLocation& location, bool is_pub,
+                                                       bool is_enum)
 {
-    advance_by(6); // 'struct'
-    auto decl = std::make_unique<StructDecl>();
+    advance_by(is_enum ? 4 : 6); // 'enum' or 'struct'
+    auto decl = std::make_unique<TypeDecl>();
     decl->name = std::move(name);
     decl->location = location;
     decl->is_pub = is_pub;
+    decl->is_enum = is_enum;
+    const std::string kind = is_enum ? "enum" : "struct";
     skip_trivia();
     if (looking_at_word("copy")) {
         decl->is_copy = true;
@@ -224,10 +228,11 @@ std::unique_ptr<StructDecl> OuterParser::parse_struct(std::string name,
         skip_trivia();
     }
     if (peek() == '<') {
-        error(location_, "generic structs are not supported yet");
+        error(location_, "generic " + kind + "s are not supported yet");
         return nullptr;
     }
-    if (!expect_char('{', "'{' and the members of the struct")) {
+    if (!expect_char('{', is_enum ? "'{' and the cases of the enum"
+                                  : "'{' and the members of the struct")) {
         return nullptr;
     }
     for (;;) {
@@ -237,10 +242,10 @@ std::unique_ptr<StructDecl> OuterParser::parse_struct(std::string name,
             return decl;
         }
         if (at_end()) {
-            error(location_, "expected '}' to close the struct '" + decl->name + "'");
+            error(location_, "expected '}' to close the " + kind + " '" + decl->name + "'");
             return nullptr;
         }
-        if (!parse_struct_member(*decl) || failed_) {
+        if (!parse_type_member(*decl) || failed_) {
             skip_rest_of_object();
             return nullptr;
         }
@@ -248,7 +253,7 @@ std::unique_ptr<StructDecl> OuterParser::parse_struct(std::string name,
         if (peek() == ',') {
             advance();
         } else if (peek() != '}') {
-            error(location_, "expected ',' between struct members, found " + describe_here());
+            error(location_, "expected ',' between " + kind + " members, found " + describe_here());
             skip_rest_of_object();
             return nullptr;
         }
@@ -269,7 +274,7 @@ void OuterParser::skip_rest_of_object()
     }
 }
 
-bool OuterParser::parse_struct_member(StructDecl& decl)
+bool OuterParser::parse_type_member(TypeDecl& decl)
 {
     SourceLocation key_location;
     const bool quoted = peek() == '"';
@@ -286,18 +291,63 @@ bool OuterParser::parse_struct_member(StructDecl& decl)
         return false;
     }
     skip_trivia();
-    if (!looking_at_word("fn")) {
-        return parse_field(decl, std::move(*key), key_location);
+    if (looking_at_word("fn")) {
+        auto method = parse_function(std::move(*key), key_location, false, &decl);
+        if (!method) {
+            return false;
+        }
+        decl.methods.push_back(std::move(method));
+        return true;
     }
-    auto method = parse_function(std::move(*key), key_location, false, &decl);
-    if (!method) {
-        return false;
+    if (decl.is_enum) {
+        return parse_case(decl, std::move(*key), key_location);
     }
-    decl.methods.push_back(std::move(method));
-    return true;
+    return parse_field(decl.fields, std::move(*key), key_location);
 }
 
-bool OuterParser::parse_field(StructDecl& decl, std::string name, const SourceLocation& location)
+// 'Name: { field: Type, ... }' or 'Name: {}' for a case without data.
+bool OuterParser::parse_case(TypeDecl& decl, std::string name, const SourceLocation& location)
+{
+    if (peek() != '{') {
+        error(location_, "an enum case is an object of its fields, as in '" + name +
+                             ": { value: i32 }', or '" + name + ": {}' without data");
+        return false;
+    }
+    advance();
+    CaseDecl& entry = decl.cases.emplace_back();
+    entry.name = std::move(name);
+    entry.location = location;
+    for (;;) {
+        skip_trivia();
+        if (peek() == '}') {
+            advance();
+            return true;
+        }
+        SourceLocation field_location;
+        std::optional<std::string> field = parse_key(field_location);
+        if (!field) {
+            return false;
+        }
+        skip_trivia();
+        if (!expect_char(':', "':' and a type after the field name")) {
+            return false;
+        }
+        skip_trivia();
+        if (!parse_field(entry.fields, std::move(*field), field_location)) {
+            return false;
+        }
+        skip_trivia();
+        if (peek() == ',') {
+            advance();
+        } else if (peek() != '}') {
+            error(location_, "expected ',' between fields, found " + describe_here());
+            return false;
+        }
+    }
+}
+
+bool OuterParser::parse_field(std::vector<FieldDecl>& fields, std::string name,
+                              const SourceLocation& location)
 {
     FieldDecl field;
     field.name = std::move(name);
@@ -316,7 +366,7 @@ bool OuterParser::parse_field(StructDecl& decl, std::string name, const SourceLo
             return false;
         }
     }
-    decl.fields.push_back(std::move(field));
+    fields.push_back(std::move(field));
     return true;
 }
 
@@ -343,7 +393,7 @@ ExprPtr OuterParser::parse_field_default()
 
 std::unique_ptr<FnDecl> OuterParser::parse_function(std::string name,
                                                     const SourceLocation& location, bool is_pub,
-                                                    StructDecl* owner)
+                                                    TypeDecl* owner)
 {
     advance_by(2); // 'fn'
     auto function = std::make_unique<FnDecl>();

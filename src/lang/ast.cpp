@@ -75,8 +75,8 @@ class AstDumper {
 public:
     std::string dump(const Module& module)
     {
-        for (const auto& decl : module.structs) {
-            dump_struct(*decl);
+        for (const auto& decl : module.types) {
+            dump_type_decl(*decl);
         }
         for (const auto& function : module.functions) {
             dump_function(*function);
@@ -106,21 +106,34 @@ private:
         --depth_;
     }
 
-    void dump_struct(const StructDecl& decl)
+    void dump_type_decl(const TypeDecl& decl)
     {
-        line(std::string(decl.is_pub ? "pub " : "") + (decl.is_copy ? "struct copy " : "struct ") +
-             decl.name);
+        std::string header = std::string(decl.is_pub ? "pub " : "") +
+                             (decl.is_enum ? "enum " : "struct ") +
+                             (decl.is_copy ? "copy " : "") + decl.name;
+        line(header);
         ++depth_;
-        for (const FieldDecl& field : decl.fields) {
-            line("field " + field.name + ": " + field.type.name);
-            if (field.default_value) {
-                child(*field.default_value);
-            }
+        dump_fields(decl.fields);
+        for (const CaseDecl& entry : decl.cases) {
+            line("case " + entry.name);
+            ++depth_;
+            dump_fields(entry.fields);
+            --depth_;
         }
         for (const auto& method : decl.methods) {
             dump_function(*method);
         }
         --depth_;
+    }
+
+    void dump_fields(const std::vector<FieldDecl>& fields)
+    {
+        for (const FieldDecl& field : fields) {
+            line("field " + field.name + ": " + field.type.name);
+            if (field.default_value) {
+                child(*field.default_value);
+            }
+        }
     }
 
     void dump_function(const FnDecl& function)
@@ -177,6 +190,7 @@ private:
             nested(loop.body);
             break;
         }
+        case StmtKind::Match: dump_match(*static_cast<const MatchStmt&>(stmt).match); break;
         case StmtKind::Break: line("break"); break;
         case StmtKind::Continue: line("continue"); break;
         case StmtKind::Pass: line("pass"); break;
@@ -200,6 +214,54 @@ private:
         line(std::string("assign ") + (assign.op ? binary_op_spelling(*assign.op) : "") + "=");
         child(*assign.target);
         child(*assign.value);
+    }
+
+    void dump_match(const MatchExpr& match)
+    {
+        line("match");
+        child(*match.subject);
+        ++depth_;
+        for (const MatchArm& arm : match.arms) {
+            line("arm");
+            ++depth_;
+            dump_pattern(*arm.pattern);
+            if (arm.guard) {
+                line("guard");
+                child(*arm.guard);
+            }
+            if (arm.value) {
+                dump_expr(*arm.value);
+            } else {
+                dump_block(arm.body);
+            }
+            --depth_;
+        }
+        --depth_;
+    }
+
+    void dump_pattern(const Pattern& pattern)
+    {
+        switch (pattern.kind) {
+        case PatternKind::Wildcard: line("pattern _"); break;
+        case PatternKind::Binding: line("pattern name " + pattern.name); break;
+        case PatternKind::Literal:
+            line("pattern literal");
+            child(*pattern.value);
+            break;
+        case PatternKind::Range:
+            line(pattern.inclusive ? "pattern range ..=" : "pattern range ..");
+            child(*pattern.value);
+            child(*pattern.end);
+            break;
+        case PatternKind::Case:
+            line("pattern case " + pattern.name);
+            ++depth_;
+            for (const auto& argument : pattern.arguments) {
+                dump_pattern(*argument);
+            }
+            --depth_;
+            break;
+        }
     }
 
     void dump_if(const IfStmt& stmt)
@@ -274,7 +336,8 @@ private:
         }
         case ExprKind::StructLiteral: {
             const auto& lit = static_cast<const StructLiteralExpr&>(expr);
-            line("struct literal " + lit.type_name);
+            line("struct literal " + lit.type_name +
+                 (lit.case_name.empty() ? "" : "." + lit.case_name));
             ++depth_;
             for (const auto& field : lit.fields) {
                 line("field " + field.name);
@@ -283,6 +346,7 @@ private:
             --depth_;
             break;
         }
+        case ExprKind::Match: dump_match(static_cast<const MatchExpr&>(expr)); break;
         case ExprKind::Member: {
             const auto& member = static_cast<const MemberExpr&>(expr);
             line("member ." + member.member);

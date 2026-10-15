@@ -98,12 +98,12 @@ TEST(outer_unsupported_entries_and_recovery)
 {
     auto r = parse(R"({
   max_hp: 100,
-  Shape: enum { Circle: { r: f32 } },
+  Shape: trait { area: fn<f32(self)> },
   ok: fn pass,
 })");
     EXPECT(r->error_count() == 2);
     EXPECT(r->has_error("'max_hp': only functions"));
-    EXPECT(r->has_error("'enum' is not supported yet"));
+    EXPECT(r->has_error("'trait' is not supported yet"));
     EXPECT(r->module->functions.size() == 1);
 }
 
@@ -148,8 +148,8 @@ TEST(outer_struct_fields_methods_and_self)
   V: struct copy { x: f32 },
 })");
     EXPECT(!r->diagnostics.has_errors());
-    EXPECT(r->module->structs.size() == 2);
-    const StructDecl& player = *r->module->structs[0];
+    EXPECT(r->module->types.size() == 2);
+    const TypeDecl& player = *r->module->types[0];
     EXPECT(player.fields.size() == 2);
     EXPECT(player.fields[1].default_value != nullptr);
     EXPECT(player.methods.size() == 3);
@@ -158,7 +158,7 @@ TEST(outer_struct_fields_methods_and_self)
     EXPECT(player.methods[1]->params.size() == 1);
     EXPECT(!player.methods[2]->self_convention.has_value());
     EXPECT(player.methods[2]->owner == &player);
-    EXPECT(r->module->structs[1]->is_copy);
+    EXPECT(r->module->types[1]->is_copy);
 }
 
 TEST(outer_self_rules)
@@ -176,4 +176,31 @@ TEST(outer_struct_error_skips_the_whole_struct)
 })");
     EXPECT(r->error_count() == 1);
     EXPECT(r->module->functions.size() == 1);
+}
+
+TEST(outer_enum_cases_and_methods)
+{
+    auto r = parse(R"({
+  Shape: enum {
+    Circle: { radius: f32 },
+    Rect: { w: f32, h: f32 = 1.0 },
+    Empty: {},
+    area: fn<f32(self)> 0.0,
+  },
+  Color: enum copy { Red: {}, Green: {} },
+})");
+    EXPECT(!r->diagnostics.has_errors());
+    const TypeDecl& shape = *r->module->types[0];
+    EXPECT(shape.is_enum);
+    EXPECT(shape.cases.size() == 3);
+    EXPECT(shape.cases[1].fields.size() == 2);
+    EXPECT(shape.cases[1].fields[1].default_value != nullptr);
+    EXPECT(shape.cases[2].fields.empty());
+    EXPECT(shape.methods.size() == 1);
+    EXPECT(r->module->types[1]->is_copy);
+}
+
+TEST(outer_enum_case_needs_object)
+{
+    EXPECT(parse("{ E: enum { A: i32 } }")->has_error("an enum case is an object"));
 }

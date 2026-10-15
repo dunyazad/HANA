@@ -1,0 +1,56 @@
+// match as a statement and as a value, guards, nested case patterns,
+// break and return inside arms, and matching temporaries.
+{
+  Op: enum copy { Add: {}, Mul: {}, Neg: {} },
+  Token: enum {
+    Num: { value: i64 },
+    Sym: { op: Op },
+    End: {},
+  },
+
+  apply: fn<i64(op: Op, a: i64, b: i64)> '''
+    return match op:
+      Add: a + b
+      Mul: a * b
+      Neg: -a
+  ''',
+  next: fn<Token(i: i32)> '''
+    return match i:
+      0: Token.Num { value: 6 }
+      1: Token.Sym { op: Op.Mul }
+      2: Token.Num { value: 7 }
+      3: Token.Sym { op: Op.Neg }
+      _: Token.End
+  ''',
+  sign: fn<i32(n: i64)> '''
+    match n:
+      0: return 0
+      x if x < 0: return -1
+      _: return 1
+  ''',
+
+  main: fn '''
+    var acc: i64 = 0
+    var pending = Op.Add
+    var i = 0
+    while true:
+      match next(i):
+        Num(v): acc = apply(pending, acc, v)
+        Sym(Neg): acc = apply(Op.Neg, acc, 0)
+        Sym(op): pending = op
+        End: break
+      i += 1
+    print(acc)
+    print(f"{sign(-5)} {sign(0)} {sign(12)}")
+    var count = 0
+    var n: u8 = 0
+    while n < 250:
+      let step = match n:
+        0..10: 1
+        10..=99: 10
+        _: 100
+      count += step
+      n += 7
+    print(count)
+  ''',
+}

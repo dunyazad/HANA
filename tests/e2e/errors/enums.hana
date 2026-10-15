@@ -1,0 +1,31 @@
+{
+  S: enum { A: { x: i32 }, B: {}, A: {} },
+  K: enum copy { P: { s: str } },
+  L: enum { Cons: { next: L } },
+  T: enum { X: {}, Y: {} },
+  main: fn '''
+    let a = S.A { y: 1 }
+    let c = S { }
+    let d = S.A
+    let f = S.A(1)
+    let t = T.X
+    match t:
+      X: pass
+    match t:
+      _: pass
+      Y: pass
+    match 3:
+      1: pass
+    match true:
+      true: pass
+    match t:
+      X(1): pass
+      _: pass
+    let g = match t:
+      X: 1
+      Y: "s"
+    match 3:
+      5..2: pass
+      _: pass
+  ''',
+}

@@ -46,7 +46,7 @@ void MoveChecker::check(const Module& module)
     for (const auto& function : module.functions) {
         check_function(*function);
     }
-    for (const auto& decl : module.structs) {
+    for (const auto& decl : module.types) {
         for (const auto& method : decl->methods) {
             check_function(*method);
         }
@@ -91,6 +91,7 @@ void MoveChecker::walk_statement(const Stmt& stmt, State& state)
     }
     case StmtKind::If: walk_if(static_cast<const IfStmt&>(stmt), state); break;
     case StmtKind::While: walk_while(static_cast<const WhileStmt&>(stmt), state); break;
+    case StmtKind::Match: walk_match(*static_cast<const MatchStmt&>(stmt).match, false, state); break;
     case StmtKind::Break:
         loops_.back().breaks.push_back(state);
         state.reachable = false;
@@ -185,6 +186,17 @@ void MoveChecker::use(const Expr& expr, State& state)
             error_once(name.location, "use of moved value '" + name.name + "'", &moved->second,
                        "'" + name.name + "' was moved here" +
                            (same_place ? " in the previous iteration of the loop" : ""));
+            return;
+        }
+        // A name bound by a pattern is part of the matched variable.
+        for (const VarSymbol* root = alias_of(*name.var); root != nullptr; root = alias_of(*root)) {
+            auto root_moved = state.moved.find(root);
+            if (root_moved != state.moved.end()) {
+                error_once(name.location, "use of '" + name.name + "' after '" + root->name +
+                                              "' was moved",
+                           &root_moved->second, "'" + root->name + "' was moved here");
+                return;
+            }
         }
         return;
     }
@@ -209,6 +221,7 @@ void MoveChecker::use(const Expr& expr, State& state)
     }
     case ExprKind::Cast: use(*static_cast<const CastExpr&>(expr).operand, state); return;
     case ExprKind::Call: walk_call(static_cast<const CallExpr&>(expr), state); return;
+    case ExprKind::Match: walk_match(static_cast<const MatchExpr&>(expr), false, state); return;
     case ExprKind::StructLiteral:
         for (const auto& field : static_cast<const StructLiteralExpr&>(expr).fields) {
             consume(*field.value, state);
@@ -259,14 +272,24 @@ void MoveChecker::consume(const Expr& expr, State& state)
         walk_branches(*cond.condition, *cond.then_value, *cond.else_value, true, state);
         return;
     }
+    case ExprKind::Match: walk_match(static_cast<const MatchExpr&>(expr), true, state); return;
     default: use(expr, state); return;
     }
 }
 
 void MoveChecker::move_variable(const VarSymbol& var, const Expr& moved, State& state)
 {
+    if (const VarSymbol* root = alias_of(var)) {
+        // Moving a name bound by a pattern moves part of the matched variable.
+        if (state.reachable) {
+            state.moved.emplace(&var, start_location(moved));
+        }
+        move_variable(*root, moved, state);
+        return;
+    }
     const std::string text = place_text(moved);
-    const bool whole = moved.kind == ExprKind::Name;
+    const bool whole = moved.kind == ExprKind::Name &&
+                       static_cast<const NameExpr&>(moved).var == &var;
     const bool is_self = var.name == "self";
     switch (var.kind) {
     case VarKind::Param:
@@ -294,6 +317,74 @@ void MoveChecker::move_variable(const VarSymbol& var, const Expr& moved, State& 
         }
         return;
     }
+}
+
+// The subject is read once. Each arm starts from the state in which the
+// earlier arms did not match: their guards ran, their bodies did not. A
+// name bound by a pattern refers to part of the subject, so moving it
+// moves the subject's variable; binding alone moves nothing.
+void MoveChecker::walk_match(const MatchExpr& match, bool consuming, State& state)
+{
+    use(*match.subject, state);
+    const VarSymbol* root = root_variable(*match.subject);
+    State fallthrough = state;
+    State after;
+    after.reachable = false;
+    for (const MatchArm& arm : match.arms) {
+        State arm_state = fallthrough;
+        std::vector<const VarSymbol*> bindings;
+        collect_bindings(*arm.pattern, bindings);
+        for (const VarSymbol* binding : bindings) {
+            arm_state.moved.erase(binding);
+            if (root != nullptr) {
+                aliases_[binding] = root;
+            } else {
+                aliases_.erase(binding);
+            }
+        }
+        if (arm.guard) {
+            use(*arm.guard, arm_state);
+            merge(fallthrough, arm_state);
+        }
+        if (arm.value) {
+            if (consuming) {
+                consume(*arm.value, arm_state);
+            } else {
+                use(*arm.value, arm_state);
+            }
+        } else {
+            walk_block(arm.body, arm_state);
+        }
+        merge(after, arm_state);
+    }
+    state = std::move(after);
+}
+
+void MoveChecker::collect_bindings(const Pattern& pattern, std::vector<const VarSymbol*>& out)
+{
+    if (pattern.kind == PatternKind::Binding && pattern.symbol != nullptr) {
+        out.push_back(pattern.symbol);
+    }
+    for (const auto& argument : pattern.arguments) {
+        collect_bindings(*argument, out);
+    }
+}
+
+// The variable an expression names or is a field of, or null for a
+// temporary value.
+const VarSymbol* MoveChecker::root_variable(const Expr& expr) const
+{
+    const Expr& root = root_of(expr);
+    if (root.kind != ExprKind::Name) {
+        return nullptr;
+    }
+    return static_cast<const NameExpr&>(root).var;
+}
+
+const VarSymbol* MoveChecker::alias_of(const VarSymbol& var) const
+{
+    auto it = aliases_.find(&var);
+    return it != aliases_.end() ? it->second : nullptr;
 }
 
 // Arguments run left to right. The receiver of a method runs first and is

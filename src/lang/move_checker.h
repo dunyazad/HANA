@@ -15,8 +15,9 @@ namespace hana::lang {
 // Checks that a value is not used after it was moved. Values of types that
 // are not Copy move when they are stored ('let', assignment, struct field),
 // passed to a 'sink' parameter or returned. Moving a field moves the whole
-// variable it belongs to. Runs on a module that passed
-// semantic analysis without errors.
+// variable it belongs to, and a name bound by a 'match' pattern is part of
+// the matched variable. Runs on a module that passed semantic analysis
+// without errors.
 //
 // The analysis follows control flow: after 'if' a value is moved when it is
 // moved on either branch, and a value moved inside a loop is moved again at
@@ -49,6 +50,10 @@ private:
     void walk_assign(const AssignStmt& assign, State& state);
     void walk_if(const IfStmt& stmt, State& state);
     void walk_while(const WhileStmt& stmt, State& state);
+    void walk_match(const MatchExpr& match, bool consuming, State& state);
+    static void collect_bindings(const Pattern& pattern, std::vector<const VarSymbol*>& out);
+    const VarSymbol* root_variable(const Expr& expr) const;
+    const VarSymbol* alias_of(const VarSymbol& var) const;
 
     // Expressions: 'use' reads a value, 'consume' moves it when it is not
     // Copy.
@@ -67,6 +72,9 @@ private:
 
     DiagnosticEngine& diagnostics_;
     std::vector<Loop> loops_;
+    // Names bound by a pattern, mapped to the variable of the matched value
+    // when that value is a variable or a field of one.
+    std::unordered_map<const VarSymbol*, const VarSymbol*> aliases_;
     // Loops are walked until their state settles, so the same error can be
     // found more than once; each location is reported once.
     std::set<std::uint32_t> reported_; // source offsets

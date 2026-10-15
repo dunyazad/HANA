@@ -49,11 +49,32 @@ const Type* str_type() { return &kStr; }
 const Type* i32_type() { return &kI32; }
 const Type* f64_type() { return &kF64; }
 
+int find_field(const std::vector<FieldInfo>& fields, std::string_view name)
+{
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        if (fields[i].name == name) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+int UserType::find_case(std::string_view case_name) const
+{
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        if (cases[i].name == case_name) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 bool is_copy_type(const Type* type)
 {
     switch (type->kind) {
     case TypeKind::Str: return false;
-    case TypeKind::Struct: return type->struct_info->is_copy;
+    case TypeKind::Struct:
+    case TypeKind::Enum: return type->user->is_copy;
     default: return true;
     }
 }

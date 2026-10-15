@@ -14,7 +14,7 @@ namespace hana::lang {
 struct Type;
 struct VarSymbol;
 struct FunctionSymbol;
-struct StructDecl;
+struct TypeDecl;
 
 // ---------------------------------------------------------------------------
 // Types as written in source
@@ -42,6 +42,7 @@ enum class ExprKind {
     Cast,
     Call,
     StructLiteral,
+    Match,
     Member,
     Index,
     Try,
@@ -235,7 +236,7 @@ struct CallExpr final : Expr {
     std::vector<ExprPtr> args;
 };
 
-// 'Point { x: 1.0, y: 2.0 }'
+// 'Point { x: 1.0, y: 2.0 }', or an enum value 'Shape.Circle { radius: 1.0 }'
 struct StructLiteralExpr final : Expr {
     StructLiteralExpr(SourceLocation location_value, std::string type_name_value)
         : Expr(ExprKind::StructLiteral, location_value)
@@ -248,10 +249,13 @@ struct StructLiteralExpr final : Expr {
         ExprPtr value;
     };
     std::string type_name;
+    std::string case_name; // empty for a struct value
+    SourceLocation case_location;
     std::vector<FieldInit> fields;
-    // Set by semantic analysis: for each struct field in declaration order,
-    // the index into 'fields', or -1 when the field's default is used.
+    // Set by semantic analysis: for each field in declaration order, the
+    // index into 'fields', or -1 when the field's default is used.
     std::vector<int> field_order;
+    int case_index = -1; // for an enum value
 };
 
 // 'object.member': a field, or the callee of a method call.
@@ -266,6 +270,7 @@ struct MemberExpr final : Expr {
     std::string member;
     // Set by semantic analysis.
     int field_index = -1;                     // a field access
+    int case_index = -1;                      // an enum value without fields: 'Color.Red'
     const FunctionSymbol* method = nullptr;   // the callee of a method call
     bool is_static_call = false;              // 'Type.function(...)', no receiver
 };
@@ -300,6 +305,7 @@ enum class StmtKind {
     Return,
     If,
     While,
+    Match,
     Break,
     Continue,
     Pass,
@@ -387,6 +393,62 @@ struct WhileStmt final : Stmt {
     Block body;
 };
 
+// ---------------------------------------------------------------------------
+// Patterns of 'match'
+
+enum class PatternKind {
+    Wildcard, // '_'
+    Binding,  // a name: matches anything and binds it
+    Literal,  // 0, -1, 'a', true
+    Range,    // 1..=9 or 1..10
+    Case,     // an enum case: Circle(r), Empty
+};
+
+struct Pattern;
+using PatternPtr = std::unique_ptr<Pattern>;
+
+struct Pattern {
+    PatternKind kind = PatternKind::Wildcard;
+    SourceLocation location;
+    std::string name;          // Binding and Case
+    ExprPtr value;             // Literal, and the start of a Range
+    ExprPtr end;               // the end of a Range
+    bool inclusive = false;    // '..=' rather than '..'
+    bool has_arguments = false; // Case written with '(...)'
+    std::vector<PatternPtr> arguments; // Case: one pattern per field
+    // Set by semantic analysis.
+    const VarSymbol* symbol = nullptr; // Binding
+    int case_index = -1;               // Case
+};
+
+struct MatchArm {
+    PatternPtr pattern;
+    ExprPtr guard;             // 'n if n > 100', or null
+    Block body;                // statement form
+    ExprPtr value;             // expression form
+    SourceLocation location;
+};
+
+// 'match subject:' followed by indented arms. As a statement each arm has
+// a block; as an expression each arm has a value.
+struct MatchExpr final : Expr {
+    MatchExpr(SourceLocation location_value)
+        : Expr(ExprKind::Match, location_value)
+    {
+    }
+    ExprPtr subject;
+    std::vector<MatchArm> arms;
+};
+
+struct MatchStmt final : Stmt {
+    explicit MatchStmt(std::unique_ptr<MatchExpr> match_value)
+        : Stmt(StmtKind::Match, match_value->location)
+        , match(std::move(match_value))
+    {
+    }
+    std::unique_ptr<MatchExpr> match;
+};
+
 struct SimpleStmt final : Stmt {
     SimpleStmt(StmtKind kind_value, SourceLocation location_value)
         : Stmt(kind_value, location_value)
@@ -419,7 +481,7 @@ struct FnDecl {
     bool is_pub = false;
     // Methods: the struct that owns the function and, when it takes 'self',
     // how 'self' is passed. 'self' is not part of 'params'.
-    StructDecl* owner = nullptr;
+    TypeDecl* owner = nullptr;
     std::optional<ParamConvention> self_convention;
     SourceLocation self_location;
     std::vector<Param> params;
@@ -436,19 +498,28 @@ struct FieldDecl {
     ExprPtr default_value; // 'hp: i32 = 100', or null
 };
 
-// 'Point: struct { x: f32, y: f32, length: fn<f32(self)> ... }'
-struct StructDecl {
+struct CaseDecl {
+    std::string name;
+    SourceLocation location;
+    std::vector<FieldDecl> fields;
+};
+
+// 'Point: struct { x: f32, y: f32, length: fn<f32(self)> ... }' or
+// 'Shape: enum { Circle: { radius: f32 }, Empty: {}, area: fn... }'
+struct TypeDecl {
     std::string name;
     SourceLocation location;
     bool is_pub = false;
-    bool is_copy = false; // 'struct copy { ... }'
-    std::vector<FieldDecl> fields;
+    bool is_enum = false;
+    bool is_copy = false; // 'struct copy { ... }', 'enum copy { ... }'
+    std::vector<FieldDecl> fields; // struct
+    std::vector<CaseDecl> cases;   // enum
     std::vector<std::unique_ptr<FnDecl>> methods;
     const Type* type = nullptr;
 };
 
 struct Module {
-    std::vector<std::unique_ptr<StructDecl>> structs;
+    std::vector<std::unique_ptr<TypeDecl>> types; // structs and enums
     std::vector<std::unique_ptr<FnDecl>> functions;
 };
 

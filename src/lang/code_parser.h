@@ -40,6 +40,13 @@ private:
     bool parse_suite(Block& block);
     bool expect_line_end();
 
+    // match
+    ExprPtr parse_value();
+    std::unique_ptr<MatchExpr> parse_match(bool is_expression);
+    bool parse_match_arm(MatchExpr& match_expr, bool is_expression);
+    PatternPtr parse_pattern();
+    ExprPtr parse_pattern_literal();
+
     // Expressions, lowest precedence first
     ExprPtr parse_expression();
     ExprPtr parse_or();

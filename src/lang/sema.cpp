@@ -4,25 +4,14 @@
 #include <utility>
 
 #include "lang/move_checker.h"
+#include "lang/sema_util.h"
 
 namespace hana::lang {
 
-namespace {
+using sema_util::is_untyped_literal;
+using sema_util::quoted;
 
-bool is_untyped_literal(const Expr& expr)
-{
-    if (expr.kind == ExprKind::IntLiteral) {
-        return static_cast<const IntLiteralExpr&>(expr).suffix.empty();
-    }
-    if (expr.kind == ExprKind::FloatLiteral) {
-        return static_cast<const FloatLiteralExpr&>(expr).suffix.empty();
-    }
-    if (expr.kind == ExprKind::Unary) {
-        const auto& unary = static_cast<const UnaryExpr&>(expr);
-        return unary.op == UnaryOp::Neg && is_untyped_literal(*unary.operand);
-    }
-    return false;
-}
+namespace {
 
 bool is_comparison(BinaryOp op)
 {
@@ -44,10 +33,6 @@ bool is_logical(BinaryOp op)
     return op == BinaryOp::And || op == BinaryOp::Or;
 }
 
-std::string quoted(const Type* type)
-{
-    return "'" + std::string(type->name) + "'";
-}
 
 std::uint64_t max_magnitude(const Type* type, bool negated)
 {
@@ -137,31 +122,31 @@ std::unique_ptr<Program> Sema::check(Module& module)
 {
     program_ = std::make_unique<Program>();
     declare_intrinsics();
-    for (auto& decl : module.structs) {
-        declare_struct(*decl);
+    for (auto& decl : module.types) {
+        declare_type(*decl);
     }
-    for (auto& decl : module.structs) {
-        declare_struct_fields(*decl);
+    for (auto& decl : module.types) {
+        declare_type_fields(*decl);
     }
-    for (const auto& decl : module.structs) {
-        check_struct_containment(*decl);
-        check_copy_struct(*decl);
+    for (const auto& decl : module.types) {
+        check_type_containment(*decl);
+        check_copy_type(*decl);
     }
     for (auto& function : module.functions) {
         declare_function(*function);
     }
-    for (auto& decl : module.structs) {
+    for (auto& decl : module.types) {
         for (auto& method : decl->methods) {
             declare_method(*decl, *method);
         }
     }
-    for (auto& decl : module.structs) {
+    for (auto& decl : module.types) {
         check_field_defaults(*decl);
     }
     for (auto& function : module.functions) {
         check_function_body(*function);
     }
-    for (auto& decl : module.structs) {
+    for (auto& decl : module.types) {
         for (auto& method : decl->methods) {
             check_function_body(*method);
         }
@@ -198,43 +183,62 @@ void Sema::declare_intrinsics()
     }
 }
 
-// Struct names are declared before any field or function so types can
-// refer to structs declared later in the file.
-void Sema::declare_struct(StructDecl& decl)
+// Type names are declared before any field or function so types can refer
+// to structs and enums declared later in the file.
+void Sema::declare_type(TypeDecl& decl)
 {
     if (find_builtin_type(decl.name) != nullptr) {
         diagnostics_->error(decl.location, "'" + decl.name + "' is a built-in type and cannot be "
                                                             "redefined");
         return;
     }
-    if (StructInfo* existing = lookup_struct(decl.name)) {
-        diagnostics_->error(decl.location, "struct '" + decl.name + "' is already defined");
+    if (UserType* existing = lookup_type(decl.name)) {
+        diagnostics_->error(decl.location, "'" + decl.name + "' is already defined as " +
+                                               (existing->is_enum() ? "an enum" : "a struct"));
         diagnostics_->note(existing->location, "previous definition is here");
         return;
     }
-    StructInfo& info = program_->structs.emplace_back();
+    UserType& info = program_->types.emplace_back();
     info.name = decl.name;
     info.location = decl.location;
     info.is_copy = decl.is_copy;
+    info.type.kind = decl.is_enum ? TypeKind::Enum : TypeKind::Struct;
     info.type.name = info.name;
-    info.type.struct_info = &info;
+    info.type.user = &info;
     decl.type = &info.type;
-    structs_[info.name] = &info;
+    types_[info.name] = &info;
 }
 
-void Sema::declare_struct_fields(StructDecl& decl)
+void Sema::declare_type_fields(TypeDecl& decl)
 {
     if (decl.type == nullptr) {
         return; // duplicate definition, already reported
     }
-    StructInfo& info = *lookup_struct(decl.name);
-    for (FieldDecl& field : decl.fields) {
-        if (info.find_field(field.name) >= 0) {
-            diagnostics_->error(field.location, "field '" + field.name + "' is already declared in '" +
+    UserType& info = *lookup_type(decl.name);
+    declare_fields(decl.fields, info.fields, "'" + decl.name + "'");
+    for (CaseDecl& entry : decl.cases) {
+        if (info.find_case(entry.name) >= 0) {
+            diagnostics_->error(entry.location, "case '" + entry.name + "' is already declared in '" +
                                                     decl.name + "'");
             continue;
         }
-        StructField& entry = info.fields.emplace_back();
+        EnumCase& target = info.cases.emplace_back();
+        target.name = entry.name;
+        target.location = entry.location;
+        declare_fields(entry.fields, target.fields, "case '" + decl.name + "." + entry.name + "'");
+    }
+}
+
+void Sema::declare_fields(std::vector<FieldDecl>& decls, std::vector<FieldInfo>& fields,
+                          const std::string& owner)
+{
+    for (FieldDecl& field : decls) {
+        if (find_field(fields, field.name) >= 0) {
+            diagnostics_->error(field.location, "field '" + field.name + "' is already declared in " +
+                                                    owner);
+            continue;
+        }
+        FieldInfo& entry = fields.emplace_back();
         entry.name = field.name;
         entry.type = resolve_type(field.type);
         entry.default_value = field.default_value.get();
@@ -242,28 +246,46 @@ void Sema::declare_struct_fields(StructDecl& decl)
     }
 }
 
-// A struct cannot hold itself by value: its size would be infinite.
-void Sema::check_struct_containment(const StructDecl& decl)
+// The fields a value of the type holds directly: a struct's fields, or the
+// fields of every case of an enum.
+std::vector<const FieldInfo*> Sema::value_fields(const UserType& info)
+{
+    std::vector<const FieldInfo*> result;
+    for (const FieldInfo& field : info.fields) {
+        result.push_back(&field);
+    }
+    for (const EnumCase& entry : info.cases) {
+        for (const FieldInfo& field : entry.fields) {
+            result.push_back(&field);
+        }
+    }
+    return result;
+}
+
+// A struct or enum cannot hold itself by value: its size would be infinite.
+void Sema::check_type_containment(const TypeDecl& decl)
 {
     if (decl.type == nullptr) {
         return;
     }
-    const StructInfo& info = *decl.type->struct_info;
-    for (const StructField& field : info.fields) {
-        if (!field.type->is_struct()) {
+    const UserType& info = *decl.type->user;
+    for (const FieldInfo* field : value_fields(info)) {
+        if (!field->type->is_user()) {
             continue;
         }
-        std::vector<const StructInfo*> visiting;
-        if (contains_struct(*field.type->struct_info, info, visiting)) {
-            diagnostics_->error(field.location, "struct '" + info.name + "' contains itself through "
-                                                    "field '" + field.name + "'; a struct cannot "
-                                                    "hold itself by value");
+        std::vector<const UserType*> visiting;
+        if (contains_type(*field->type->user, info, visiting)) {
+            diagnostics_->error(field->location, std::string(info.kind_word()) + " '" + info.name +
+                                                     "' contains itself through field '" +
+                                                     field->name + "'; " +
+                                                     (info.is_enum() ? "an enum" : "a struct") +
+                                                     " cannot hold itself by value");
         }
     }
 }
 
-bool Sema::contains_struct(const StructInfo& outer, const StructInfo& inner,
-                           std::vector<const StructInfo*>& visiting) const
+bool Sema::contains_type(const UserType& outer, const UserType& inner,
+                         std::vector<const UserType*>& visiting) const
 {
     if (&outer == &inner) {
         return true;
@@ -272,43 +294,55 @@ bool Sema::contains_struct(const StructInfo& outer, const StructInfo& inner,
         return false; // a cycle that does not pass through 'inner', reported elsewhere
     }
     visiting.push_back(&outer);
-    for (const StructField& field : outer.fields) {
-        if (field.type->is_struct() && contains_struct(*field.type->struct_info, inner, visiting)) {
+    for (const FieldInfo* field : value_fields(outer)) {
+        if (field->type->is_user() && contains_type(*field->type->user, inner, visiting)) {
             return true;
         }
     }
     return false;
 }
 
-void Sema::check_copy_struct(const StructDecl& decl)
+void Sema::check_copy_type(const TypeDecl& decl)
 {
     if (decl.type == nullptr || !decl.is_copy) {
         return;
     }
-    for (const StructField& field : decl.type->struct_info->fields) {
-        if (!field.type->is_error() && !is_copy_type(field.type)) {
-            diagnostics_->error(field.location, "'" + decl.name + "' is declared 'struct copy', but "
-                                                    "field '" + field.name + "' of type " +
-                                                    quoted(field.type) + " is not Copy");
+    const UserType& info = *decl.type->user;
+    for (const FieldInfo* field : value_fields(info)) {
+        if (!field->type->is_error() && !is_copy_type(field->type)) {
+            diagnostics_->error(field->location, "'" + decl.name + "' is declared '" +
+                                                     info.kind_word() + " copy', but field '" +
+                                                     field->name + "' of type " +
+                                                     quoted(field->type) + " is not Copy");
         }
     }
 }
 
 // Defaults are checked without any variables in scope; they are evaluated
-// again for every struct value that leaves the field out.
-void Sema::check_field_defaults(StructDecl& decl)
+// again for every value that leaves the field out.
+void Sema::check_field_defaults(TypeDecl& decl)
 {
     if (decl.type == nullptr) {
         return;
     }
-    const StructInfo& info = *decl.type->struct_info;
-    for (FieldDecl& field : decl.fields) {
+    const UserType& info = *decl.type->user;
+    check_defaults(decl.fields, info.fields);
+    for (CaseDecl& entry : decl.cases) {
+        const int index = info.find_case(entry.name);
+        if (index >= 0) {
+            check_defaults(entry.fields, info.cases[static_cast<std::size_t>(index)].fields);
+        }
+    }
+}
+
+void Sema::check_defaults(std::vector<FieldDecl>& decls, const std::vector<FieldInfo>& fields)
+{
+    for (FieldDecl& field : decls) {
         if (!field.default_value) {
             continue;
         }
-        const int index = info.find_field(field.name);
-        const Type* type = index >= 0 ? info.fields[static_cast<std::size_t>(index)].type
-                                      : error_type();
+        const int index = find_field(fields, field.name);
+        const Type* type = index >= 0 ? fields[static_cast<std::size_t>(index)].type : error_type();
         return_type_ = void_type();
         push_scope();
         const Type* value = check_expr(*field.default_value, type);
@@ -332,15 +366,16 @@ FunctionSymbol& Sema::create_function_symbol(FnDecl& function, std::string name)
     return symbol;
 }
 
-void Sema::declare_method(StructDecl& decl, FnDecl& method)
+void Sema::declare_method(TypeDecl& decl, FnDecl& method)
 {
     if (decl.type == nullptr) {
         return;
     }
-    StructInfo& info = *lookup_struct(decl.name);
-    if (info.find_field(method.name) >= 0) {
-        diagnostics_->error(method.location, "'" + method.name + "' is already declared as a field "
-                                                                "of '" + decl.name + "'");
+    UserType& info = *lookup_type(decl.name);
+    if (info.find_field(method.name) >= 0 || info.find_case(method.name) >= 0) {
+        diagnostics_->error(method.location, "'" + method.name + "' is already declared as a " +
+                                                 (info.is_enum() ? "case" : "field") + " of '" +
+                                                 decl.name + "'");
         return;
     }
     if (auto existing = info.methods.find(method.name); existing != info.methods.end()) {
@@ -363,10 +398,11 @@ void Sema::declare_function(FnDecl& function)
         }
         return;
     }
-    if (const StructInfo* existing = lookup_struct(function.name)) {
-        diagnostics_->error(function.location, "'" + function.name + "' is already defined as a "
-                                                                    "struct");
-        diagnostics_->note(existing->location, "the struct is defined here");
+    if (const UserType* existing = lookup_type(function.name)) {
+        diagnostics_->error(function.location, "'" + function.name + "' is already defined as " +
+                                                   (existing->is_enum() ? "an enum" : "a struct"));
+        diagnostics_->note(existing->location, std::string("the ") + existing->kind_word() +
+                                                   " is defined here");
         return;
     }
     FunctionSymbol& symbol = create_function_symbol(function, function.name);
@@ -499,6 +535,11 @@ void Sema::collect_pending_lets(Block& block)
             break;
         }
         case StmtKind::While: collect_pending_lets(static_cast<WhileStmt&>(*statement).body); break;
+        case StmtKind::Match:
+            for (MatchArm& arm : static_cast<MatchStmt&>(*statement).match->arms) {
+                collect_pending_lets(arm.body);
+            }
+            break;
         default: break;
         }
     }
@@ -571,7 +612,7 @@ const Type* Sema::resolve_type(const TypeExpr& type)
     if (const Type* builtin = find_builtin_type(type.name)) {
         return builtin;
     }
-    if (const StructInfo* info = lookup_struct(type.name)) {
+    if (const UserType* info = lookup_type(type.name)) {
         return &info->type;
     }
     diagnostics_->error(type.location, "unknown type '" + type.name + "'");
@@ -603,6 +644,7 @@ bool Sema::check_statement(Stmt& stmt)
     case StmtKind::Return: return check_return(static_cast<ReturnStmt&>(stmt));
     case StmtKind::If: return check_if(static_cast<IfStmt&>(stmt));
     case StmtKind::While: return check_while(static_cast<WhileStmt&>(stmt));
+    case StmtKind::Match: return check_match_statement(static_cast<MatchStmt&>(stmt));
     case StmtKind::Break: return check_jump(stmt, "break");
     case StmtKind::Continue: return check_jump(stmt, "continue");
     case StmtKind::Pass: return false;
@@ -811,6 +853,9 @@ const Type* Sema::check_expr(Expr& expr, const Type* expected)
         type = check_struct_literal(static_cast<StructLiteralExpr&>(expr));
         break;
     case ExprKind::Member: type = check_member(static_cast<MemberExpr&>(expr)); break;
+    case ExprKind::Match:
+        type = check_match_expression(static_cast<MatchExpr&>(expr), expected);
+        break;
     case ExprKind::Index: type = unsupported(expr, "indexing is"); break;
     case ExprKind::Try: type = unsupported(expr, "the '?' operator is"); break;
     }
@@ -865,7 +910,7 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
         const Type* type = check_expr(*part, nullptr);
         if (type->is_void()) {
             diagnostics_->error(part->location, "expression has no value to insert");
-        } else if (type->is_struct()) {
+        } else if (type->is_user()) {
             check_printable(type, part->location);
         }
     }
@@ -889,9 +934,8 @@ const Type* Sema::check_name(NameExpr& name, const Type* expected)
                                               "values yet, call it with '()'");
         return error_type();
     }
-    if (lookup_struct(name.name) != nullptr) {
-        diagnostics_->error(name.location, "'" + name.name + "' is a struct; create a value with '" +
-                                              name.name + " { ... }'");
+    if (const UserType* info = lookup_type(name.name)) {
+        diagnostics_->error(name.location, type_name_hint(*info));
         return error_type();
     }
     diagnostics_->error(name.location, "unknown name '" + name.name + "'");
@@ -1074,25 +1118,26 @@ const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
     return result;
 }
 
-// 'Name { field: value, ... }': every field without a default must be
-// given, each at most once.
+// 'Name { field: value, ... }' or 'Enum.Case { field: value, ... }': every
+// field without a default must be given, each at most once.
 const Type* Sema::check_struct_literal(StructLiteralExpr& lit)
 {
-    const StructInfo* info = lookup_struct(lit.type_name);
-    if (info == nullptr) {
-        diagnostics_->error(lit.location, "unknown struct '" + lit.type_name + "'");
+    const std::vector<FieldInfo>* fields = literal_fields(lit);
+    if (fields == nullptr) {
         for (auto& field : lit.fields) {
             check_expr(*field.value, nullptr);
         }
         return error_type();
     }
-    lit.field_order.assign(info->fields.size(), -1);
+    const UserType& info = *lookup_type(lit.type_name);
+    const std::string written =
+        lit.case_name.empty() ? info.name : info.name + "." + lit.case_name;
+    lit.field_order.assign(fields->size(), -1);
     for (std::size_t i = 0; i < lit.fields.size(); ++i) {
         StructLiteralExpr::FieldInit& field = lit.fields[i];
-        const int index = info->find_field(field.name);
+        const int index = find_field(*fields, field.name);
         if (index < 0) {
-            diagnostics_->error(field.location, "'" + info->name + "' has no field '" + field.name +
-                                                    "'");
+            diagnostics_->error(field.location, "'" + written + "' has no field '" + field.name + "'");
             check_expr(*field.value, nullptr);
             continue;
         }
@@ -1103,49 +1148,93 @@ const Type* Sema::check_struct_literal(StructLiteralExpr& lit)
             continue;
         }
         slot = static_cast<int>(i);
-        const Type* field_type = info->fields[static_cast<std::size_t>(index)].type;
+        const Type* field_type = (*fields)[static_cast<std::size_t>(index)].type;
         const Type* value = check_expr(*field.value, field_type);
         expect_type(field_type, value, field.value->location);
     }
-    report_missing_fields(lit, *info);
-    return &info->type;
+    report_missing_fields(lit, *fields, written);
+    return &info.type;
 }
 
-void Sema::report_missing_fields(const StructLiteralExpr& lit, const StructInfo& info)
+// The fields a struct value or an enum case takes, or null after an error.
+const std::vector<FieldInfo>* Sema::literal_fields(StructLiteralExpr& lit)
+{
+    const UserType* info = lookup_type(lit.type_name);
+    if (info == nullptr) {
+        diagnostics_->error(lit.location, "unknown type '" + lit.type_name + "'");
+        return nullptr;
+    }
+    if (!info->is_enum()) {
+        if (!lit.case_name.empty()) {
+            diagnostics_->error(lit.case_location, "'" + info->name + "' is a struct; create a value "
+                                                       "with '" + info->name + " { ... }'");
+            return nullptr;
+        }
+        return &info->fields;
+    }
+    if (lit.case_name.empty()) {
+        diagnostics_->error(lit.location, type_name_hint(*info));
+        return nullptr;
+    }
+    lit.case_index = info->find_case(lit.case_name);
+    if (lit.case_index < 0) {
+        diagnostics_->error(lit.case_location, "'" + info->name + "' has no case '" + lit.case_name +
+                                                   "'");
+        return nullptr;
+    }
+    return &info->cases[static_cast<std::size_t>(lit.case_index)].fields;
+}
+
+void Sema::report_missing_fields(const StructLiteralExpr& lit, const std::vector<FieldInfo>& fields,
+                                 const std::string& written)
 {
     std::string missing;
     std::size_t count = 0;
-    for (std::size_t i = 0; i < info.fields.size(); ++i) {
-        if (lit.field_order[i] >= 0 || info.fields[i].default_value != nullptr) {
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        if (lit.field_order[i] >= 0 || fields[i].default_value != nullptr) {
             continue;
         }
-        missing += (count == 0 ? "'" : ", '") + info.fields[i].name + "'";
+        missing += (count == 0 ? "'" : ", '") + fields[i].name + "'";
         ++count;
     }
     if (count > 0) {
         diagnostics_->error(lit.location, std::string(count == 1 ? "missing field " : "missing fields ") +
-                                             missing + " in '" + info.name + " { ... }'");
+                                             missing + " in '" + written + " { ... }'");
     }
 }
 
-// A field read 'value.field'. Calls of methods are handled by check_call.
+// Explains how to make a value when a type name is used like a value.
+std::string Sema::type_name_hint(const UserType& info)
+{
+    if (!info.is_enum()) {
+        return "'" + info.name + "' is a struct; create a value with '" + info.name + " { ... }'";
+    }
+    std::string example = info.name + ".Case { ... }";
+    if (!info.cases.empty()) {
+        const EnumCase& first = info.cases.front();
+        example = info.name + "." + first.name + (first.fields.empty() ? "" : " { ... }");
+    }
+    return "'" + info.name + "' is an enum; create a value of one of its cases, as in '" + example +
+           "'";
+}
+
+// A field read 'value.field', or an enum case without fields 'Color.Red'.
+// Calls of methods are handled by check_call.
 const Type* Sema::check_member(MemberExpr& member)
 {
-    if (const StructInfo* info = static_struct_name(*member.object)) {
-        diagnostics_->error(member.location, "'" + info->name + "." + member.member +
-                                                "' is not a value; call a function with '()'");
-        return error_type();
+    if (const UserType* info = static_type_name(*member.object)) {
+        return check_static_member(member, *info);
     }
     const Type* object = check_expr(*member.object, nullptr);
     if (object->is_error()) {
         return error_type();
     }
-    if (!object->is_struct()) {
+    if (!object->is_user()) {
         diagnostics_->error(member.location, "a value of type " + quoted(object) + " has no field '" +
                                                 member.member + "'");
         return error_type();
     }
-    const StructInfo& info = *object->struct_info;
+    const UserType& info = *object->user;
     const int index = info.find_field(member.member);
     if (index >= 0) {
         member.field_index = index;
@@ -1154,6 +1243,10 @@ const Type* Sema::check_member(MemberExpr& member)
     if (info.methods.count(member.member) != 0) {
         diagnostics_->error(member.location, "methods cannot be used as values yet; call '" +
                                                 member.member + "' with '()'");
+    } else if (info.is_enum()) {
+        diagnostics_->error(member.location, "a value of the enum '" + info.name +
+                                                "' has no field '" + member.member +
+                                                "'; use 'match' to read the fields of its case");
     } else {
         diagnostics_->error(member.location, "'" + info.name + "' has no field '" + member.member +
                                                 "'");
@@ -1161,15 +1254,42 @@ const Type* Sema::check_member(MemberExpr& member)
     return error_type();
 }
 
-// The struct named by 'Point' in 'Point.new(...)', unless a variable of that
-// name hides it.
-const StructInfo* Sema::static_struct_name(const Expr& object) const
+// 'Type.member' outside a call: only an enum case without fields is a value.
+const Type* Sema::check_static_member(MemberExpr& member, const UserType& info)
+{
+    member.object->type = &info.type;
+    const int index = info.find_case(member.member);
+    if (index < 0) {
+        if (info.methods.count(member.member) != 0) {
+            diagnostics_->error(member.location, "'" + info.name + "." + member.member +
+                                                    "' is not a value; call the function with '()'");
+        } else {
+            diagnostics_->error(member.location, "'" + info.name + "' has no " +
+                                                    (info.is_enum() ? "case" : "function") + " '" +
+                                                    member.member + "'");
+        }
+        return error_type();
+    }
+    const EnumCase& entry = info.cases[static_cast<std::size_t>(index)];
+    if (!entry.fields.empty()) {
+        diagnostics_->error(member.location, "'" + info.name + "." + entry.name + "' has fields; "
+                                                "create it with '" + info.name + "." + entry.name +
+                                                " { " + entry.fields.front().name + ": ... }'");
+        return error_type();
+    }
+    member.case_index = index;
+    return &info.type;
+}
+
+// The type named by 'Point' in 'Point.new(...)' or 'Color.Red', unless a
+// variable of that name hides it.
+const UserType* Sema::static_type_name(const Expr& object) const
 {
     if (object.kind != ExprKind::Name) {
         return nullptr;
     }
     const std::string& name = static_cast<const NameExpr&>(object).name;
-    return lookup_var(name) == nullptr ? lookup_struct(name) : nullptr;
+    return lookup_var(name) == nullptr ? lookup_type(name) : nullptr;
 }
 
 const Type* Sema::check_call(CallExpr& call)
@@ -1194,10 +1314,8 @@ const Type* Sema::check_function_call(CallExpr& call, NameExpr& callee)
     const FunctionSymbol* function = nullptr;
     if (lookup_var(callee.name) != nullptr) {
         diagnostics_->error(callee.location, "'" + callee.name + "' is a variable, not a function");
-    } else if (lookup_struct(callee.name) != nullptr) {
-        diagnostics_->error(callee.location, "'" + callee.name + "' is a struct; create a value "
-                                                                "with '" + callee.name +
-                                                                " { ... }'");
+    } else if (const UserType* info = lookup_type(callee.name)) {
+        diagnostics_->error(callee.location, type_name_hint(*info));
     } else {
         function = lookup_function(callee.name);
         if (function == nullptr) {
@@ -1223,7 +1341,7 @@ const Type* Sema::check_method_call(CallExpr& call, MemberExpr& callee)
     callee.type = void_type();
     const FunctionSymbol* function = nullptr;
     std::optional<Place> receiver;
-    if (const StructInfo* info = static_struct_name(*callee.object)) {
+    if (const UserType* info = static_type_name(*callee.object)) {
         callee.object->type = &info->type;
         function = find_static_function(callee, *info);
     } else {
@@ -1242,12 +1360,18 @@ const Type* Sema::check_method_call(CallExpr& call, MemberExpr& callee)
     return function->return_type;
 }
 
-const FunctionSymbol* Sema::find_static_function(MemberExpr& callee, const StructInfo& info)
+const FunctionSymbol* Sema::find_static_function(MemberExpr& callee, const UserType& info)
 {
     auto it = info.methods.find(callee.member);
     if (it == info.methods.end()) {
-        diagnostics_->error(callee.location, "'" + info.name + "' has no function '" +
-                                                callee.member + "'");
+        if (info.find_case(callee.member) >= 0) {
+            diagnostics_->error(callee.location, "enum values are created with '" + info.name + "." +
+                                                    callee.member + " { field: value }', not with "
+                                                                    "'()'");
+        } else {
+            diagnostics_->error(callee.location, "'" + info.name + "' has no function '" +
+                                                    callee.member + "'");
+        }
         return nullptr;
     }
     if (it->second->self_convention) {
@@ -1265,12 +1389,12 @@ const FunctionSymbol* Sema::find_method(MemberExpr& callee, const Type* receiver
     if (receiver->is_error()) {
         return nullptr;
     }
-    if (!receiver->is_struct()) {
+    if (!receiver->is_user()) {
         diagnostics_->error(callee.location, "a value of type " + quoted(receiver) +
                                                 " has no method '" + callee.member + "'");
         return nullptr;
     }
-    const StructInfo& info = *receiver->struct_info;
+    const UserType& info = *receiver->user;
     auto it = info.methods.find(callee.member);
     if (it == info.methods.end()) {
         if (info.find_field(callee.member) >= 0) {
@@ -1344,6 +1468,9 @@ void Sema::check_printable(const Type* type, const SourceLocation& location)
     } else if (type->is_struct()) {
         diagnostics_->error(location, "a value of type " + quoted(type) +
                                           " cannot be printed yet; print its fields");
+    } else if (type->is_enum()) {
+        diagnostics_->error(location, "a value of type " + quoted(type) +
+                                          " cannot be printed yet; use 'match' to print each case");
     }
 }
 
@@ -1521,10 +1648,10 @@ const FunctionSymbol* Sema::lookup_function(const std::string& name) const
     return it != functions_.end() ? it->second : nullptr;
 }
 
-StructInfo* Sema::lookup_struct(const std::string& name) const
+UserType* Sema::lookup_type(const std::string& name) const
 {
-    auto it = structs_.find(name);
-    return it != structs_.end() ? it->second : nullptr;
+    auto it = types_.find(name);
+    return it != types_.end() ? it->second : nullptr;
 }
 
 } // namespace hana::lang

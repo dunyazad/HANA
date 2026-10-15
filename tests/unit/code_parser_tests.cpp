@@ -142,3 +142,46 @@ TEST(code_parser_struct_literal_spans_lines)
     EXPECT(!r->diagnostics.has_errors());
     EXPECT(main_body(*r).statements.size() == 2);
 }
+
+TEST(code_parser_enum_value)
+{
+    auto r = parse_main("    let s = Shape.Circle { radius: 1.0 }\n");
+    EXPECT(!r->diagnostics.has_errors());
+    const auto& lit = static_cast<const StructLiteralExpr&>(first_let_init(*r));
+    EXPECT(lit.type_name == "Shape");
+    EXPECT(lit.case_name == "Circle");
+    EXPECT(lit.fields.size() == 1);
+}
+
+TEST(code_parser_match_statement_and_patterns)
+{
+    auto r = parse_main("    match v:\n"
+                        "      Circle(r): pass\n"
+                        "      Rect(_, h) if h > 1:\n"
+                        "        pass\n"
+                        "      -3..=9: pass\n"
+                        "      'a'..'z': pass\n"
+                        "      n: pass\n"
+                        "    pass\n");
+    EXPECT(!r->diagnostics.has_errors());
+    const Block& body = main_body(*r);
+    EXPECT(body.statements.size() == 2);
+    const auto& match = *static_cast<const MatchStmt&>(*body.statements[0]).match;
+    EXPECT(match.arms.size() == 5);
+    EXPECT(match.arms[0].pattern->kind == PatternKind::Case);
+    EXPECT(match.arms[1].pattern->arguments[0]->kind == PatternKind::Wildcard);
+    EXPECT(match.arms[1].guard != nullptr);
+    EXPECT(match.arms[2].pattern->kind == PatternKind::Range);
+    EXPECT(match.arms[2].pattern->inclusive);
+    EXPECT(!match.arms[3].pattern->inclusive);
+    EXPECT(match.arms[4].pattern->kind == PatternKind::Binding);
+}
+
+TEST(code_parser_match_expression_positions)
+{
+    auto r = parse_main("    let x = match v:\n      0: 1\n      _: 2\n    print(x)\n");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(main_body(*r).statements.size() == 2);
+    EXPECT(first_let_init(*r).kind == ExprKind::Match);
+    EXPECT(parse_main("    f(match v:\n      _: 1\n    )\n")->has_error("can only be the value"));
+}

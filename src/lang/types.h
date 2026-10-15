@@ -19,9 +19,10 @@ enum class TypeKind {
     Int,
     Float,
     Struct,
+    Enum,
 };
 
-struct StructInfo;
+struct UserType;
 
 // Built-in types are unique singletons, so types compare by pointer.
 struct Type {
@@ -33,7 +34,7 @@ struct Type {
     // Placeholder used while inferring the type of a variable initialized
     // with an untyped literal ('var i = 0'). Never survives semantic analysis.
     bool is_literal_var = false;
-    const StructInfo* struct_info = nullptr; // for Struct
+    const UserType* user = nullptr; // for Struct and Enum
 
     bool is_error() const { return kind == TypeKind::Error; }
     bool is_void() const { return kind == TypeKind::Void; }
@@ -41,40 +42,49 @@ struct Type {
     bool is_float() const { return kind == TypeKind::Float; }
     bool is_numeric() const { return is_integer() || is_float(); }
     bool is_struct() const { return kind == TypeKind::Struct; }
+    bool is_enum() const { return kind == TypeKind::Enum; }
+    bool is_user() const { return is_struct() || is_enum(); }
 };
 
 struct FunctionSymbol;
 struct Expr;
 
-struct StructField {
+struct FieldInfo {
     std::string name;
     const Type* type = nullptr;
     const Expr* default_value = nullptr;
     SourceLocation location;
 };
 
-// A user-defined struct. Owned by the Program; 'type.name' views 'name'.
-struct StructInfo {
+int find_field(const std::vector<FieldInfo>& fields, std::string_view name);
+
+// One case of an enum, with the fields its value carries.
+struct EnumCase {
+    std::string name;
+    SourceLocation location;
+    std::vector<FieldInfo> fields;
+};
+
+// A user-defined struct or enum. Owned by the Program; 'type.name' views
+// 'name'. A struct has 'fields', an enum has 'cases'.
+struct UserType {
     std::string name;
     SourceLocation location;
     bool is_copy = false;
-    std::vector<StructField> fields;
+    std::vector<FieldInfo> fields;
+    std::vector<EnumCase> cases;
     std::unordered_map<std::string, const FunctionSymbol*> methods;
     Type type{TypeKind::Struct, {}};
 
-    int find_field(std::string_view field_name) const
-    {
-        for (std::size_t i = 0; i < fields.size(); ++i) {
-            if (fields[i].name == field_name) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    }
+    bool is_enum() const { return type.kind == TypeKind::Enum; }
+    // "struct" or "enum", for messages.
+    const char* kind_word() const { return is_enum() ? "enum" : "struct"; }
+    int find_field(std::string_view field_name) const { return lang::find_field(fields, field_name); }
+    int find_case(std::string_view case_name) const;
 };
 
 // Copy types are duplicated instead of moved: numbers, bool, char and
-// structs declared 'struct copy'.
+// structs and enums declared with 'copy'.
 bool is_copy_type(const Type* type);
 
 // Looks up a type by its source name ("i32", "bool", ...). Returns null for

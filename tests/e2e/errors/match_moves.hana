@@ -1,0 +1,45 @@
+{
+  Msg: enum { Text: { s: str }, Quit: {} },
+  eat: fn<(sink s: str)> pass,
+  eat_msg: fn<(sink m: Msg)> pass,
+  read_only: fn<(m: Msg)> '''
+    match m:
+      Text(s): print(s)
+      Quit: pass
+  ''',
+  take_from_read: fn<(m: Msg)> '''
+    match m:
+      Text(s): eat(s)
+      Quit: pass
+  ''',
+  main: fn '''
+    let a = Msg.Text { s: "a" }
+    match a:
+      Text(s): eat(s)
+      Quit: pass
+    eat_msg(a)
+    let b = Msg.Text { s: "b" }
+    match b:
+      Text(s):
+        eat_msg(b)
+        print(s)
+      Quit: pass
+    let c = Msg.Text { s: "c" }
+    match c:
+      Text(s) if true: print(s)
+      _: pass
+    eat_msg(c)
+    let d = Msg.Text { s: "d" }
+    let got = match d:
+      Text(s): s
+      Quit: "none"
+    print(got)
+    print(match_ok())
+  ''',
+  match_ok: fn<str()> '''
+    let e = Msg.Text { s: "e" }
+    match e:
+      Text(s): return s
+      Quit: return "q"
+  ''',
+}

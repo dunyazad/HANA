@@ -1,0 +1,77 @@
+// Enums: cases with and without fields, defaults, methods, 'enum copy',
+// and match on enums, integers, chars and bools.
+{
+  Color: enum copy { Red: {}, Green: {}, Blue: {} },
+  Shape: enum {
+    Circle: { radius: f64 },
+    Rect: { w: f64, h: f64 = 1.0 },
+    Named: { name: str, inner: Color },
+    Empty: {},
+    area: fn<f64(self)> '''
+      return match self:
+        Circle(r): 3.0 * r * r
+        Rect(w, h): w * h
+        _: 0.0
+    ''',
+    label: fn<str(sink self)> '''
+      match self:
+        Named(n, _): return n
+        Circle(_): return "circle"
+        _: return "other"
+    ''',
+  },
+  code: fn<i32(c: Color)> '''
+    let v = match c:
+      Red: 1
+      Green: 2
+      Blue: 3
+    return v
+  ''',
+  classify: fn<str(n: i64)> '''
+    return match n:
+      0: "zero"
+      -9..0: "small negative"
+      1..=9: "digit"
+      x if x % 2 == 0: "even"
+      _: "odd"
+  ''',
+  grade: fn<char(c: char)> '''
+    return match c:
+      'a'..='z': 'l'
+      'A'..='Z': 'u'
+      _: '?'
+  ''',
+  main: fn '''
+    let shapes0 = Shape.Circle { radius: 2.0 }
+    print(shapes0.area())
+    print(Shape.Rect { w: 3.0 }.area())
+    print(Shape.Rect { w: 3.0, h: 2.0 }.area())
+    print(Shape.Empty.area())
+    let n = Shape.Named { name: "bob", inner: Color.Green }
+    print(n.label())
+    print(shapes0.label())
+    print(Shape.Empty.label())
+    print(code(Color.Red) + code(Color.Blue))
+    var i: i64 = -3
+    while i < 14:
+      write(classify(i))
+      write(" ")
+      i += 4
+    print("")
+    print(grade('q'))
+    print(grade('Q'))
+    print(grade('1'))
+    match true:
+      true: print("t")
+      false: print("f")
+    var c = Color.Red
+    var k = 0
+    while k < 3:
+      match c:
+        Red: c = Color.Green
+        Green: c = Color.Blue
+        Blue: c = Color.Red
+      k += 1
+    print(code(c))
+  ''',
+}

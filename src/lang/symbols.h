@@ -36,7 +36,7 @@ struct FunctionSymbol {
     std::string name;
     // Methods: the owning struct and how 'self' is passed (none for static
     // functions such as 'Point.new').
-    const StructInfo* owner = nullptr;
+    const UserType* owner = nullptr;
     std::optional<ParamConvention> self_convention;
     std::vector<const Type*> param_types;
     std::vector<ParamConvention> conventions;
@@ -50,7 +50,7 @@ struct FunctionSymbol {
 struct Program {
     std::deque<VarSymbol> vars;
     std::deque<FunctionSymbol> functions;
-    std::deque<StructInfo> structs;
+    std::deque<UserType> types;
     const FunctionSymbol* main = nullptr;
 };
 

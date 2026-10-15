@@ -203,9 +203,13 @@ StmtPtr CodeParser::parse_statement()
     case TokenKind::KwFor:
         error_at(peek(), "'for' loops are not supported yet");
         return nullptr;
-    case TokenKind::KwMatch:
-        error_at(peek(), "'match' is not supported yet");
-        return nullptr;
+    case TokenKind::KwMatch: {
+        std::unique_ptr<MatchExpr> match = parse_match(false);
+        if (!match) {
+            return nullptr;
+        }
+        return std::make_unique<MatchStmt>(std::move(match));
+    }
     case TokenKind::KwElif:
     case TokenKind::KwElse:
         error_at(peek(), "'" + peek().text + "' without a matching 'if'");
@@ -259,7 +263,7 @@ StmtPtr CodeParser::parse_let()
         return nullptr;
     }
     advance();
-    let->init = parse_expression();
+    let->init = parse_value();
     return let;
 }
 
@@ -267,7 +271,7 @@ StmtPtr CodeParser::parse_return()
 {
     auto ret = std::make_unique<ReturnStmt>(advance().location);
     if (!at_line_end()) {
-        ret->value = parse_expression();
+        ret->value = parse_value();
     }
     return ret;
 }
@@ -350,7 +354,7 @@ StmtPtr CodeParser::parse_expression_statement()
     assign->op_location = peek().location;
     assign->op = compound_assignment_op(advance().kind);
     assign->target = std::move(expr);
-    assign->value = parse_expression();
+    assign->value = parse_value();
     return assign;
 }
 
@@ -360,8 +364,168 @@ bool CodeParser::expect_line_end()
         match(TokenKind::Newline);
         return true;
     }
+    if (position_ > 0 && tokens_[position_ - 1].kind == TokenKind::Dedent) {
+        return true; // a 'match' expression ended the line with its arms
+    }
     error_at(peek(), "expected end of line, found " + describe_token(peek()));
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// match
+
+// The value of 'let', an assignment or 'return': an expression, or a
+// 'match' whose arms follow on indented lines.
+ExprPtr CodeParser::parse_value()
+{
+    if (!check(TokenKind::KwMatch)) {
+        return parse_expression();
+    }
+    std::unique_ptr<MatchExpr> match = parse_match(true);
+    if (!match) {
+        return std::make_unique<ErrorExpr>(peek().location);
+    }
+    return match;
+}
+
+// 'match' subject ':' NEWLINE INDENT arm+ DEDENT
+std::unique_ptr<MatchExpr> CodeParser::parse_match(bool is_expression)
+{
+    auto match_expr = std::make_unique<MatchExpr>(advance().location);
+    match_expr->subject = parse_expression();
+    if (!expect(TokenKind::Colon, "':' after the value of 'match'")) {
+        return nullptr;
+    }
+    if (!check(TokenKind::Newline)) {
+        error_at(peek(), "the arms of 'match' go on the following lines, indented");
+        return nullptr;
+    }
+    while (match(TokenKind::Newline)) {
+    }
+    if (!match(TokenKind::Indent)) {
+        error_at(peek(), "expected the indented arms of 'match'");
+        return nullptr;
+    }
+    while (!check(TokenKind::Dedent) && !check(TokenKind::EndOfInput)) {
+        if (match(TokenKind::Newline)) {
+            continue;
+        }
+        const std::size_t before = position_;
+        if (!parse_match_arm(*match_expr, is_expression) || panic_) {
+            synchronize();
+        }
+        if (position_ == before) {
+            advance();
+        }
+    }
+    match(TokenKind::Dedent);
+    return match_expr;
+}
+
+// pattern ['if' guard] ':' (value | block)
+bool CodeParser::parse_match_arm(MatchExpr& match_expr, bool is_expression)
+{
+    MatchArm arm;
+    arm.location = peek().location;
+    arm.pattern = parse_pattern();
+    if (!arm.pattern) {
+        return false;
+    }
+    if (match(TokenKind::KwIf)) {
+        arm.guard = parse_or();
+    }
+    if (is_expression) {
+        if (!expect(TokenKind::Colon, "':' and the value of the arm")) {
+            return false;
+        }
+        arm.value = parse_expression();
+        if (panic_ || !expect_line_end()) {
+            return false;
+        }
+    } else if (!parse_suite(arm.body)) {
+        return false;
+    }
+    match_expr.arms.push_back(std::move(arm));
+    return true;
+}
+
+// '_', a name, a literal, a range 'a..b' / 'a..=b', or an enum case
+// 'Case' / 'Case(p, ...)' whose patterns match its fields in order.
+PatternPtr CodeParser::parse_pattern()
+{
+    auto pattern = std::make_unique<Pattern>();
+    pattern->location = peek().location;
+    if (check(TokenKind::Identifier)) {
+        pattern->name = advance().text;
+        if (pattern->name == "_") {
+            pattern->kind = PatternKind::Wildcard;
+            return pattern;
+        }
+        if (!match(TokenKind::LParen)) {
+            pattern->kind = PatternKind::Binding;
+            return pattern;
+        }
+        pattern->kind = PatternKind::Case;
+        pattern->has_arguments = true;
+        while (!check(TokenKind::RParen)) {
+            PatternPtr argument = parse_pattern();
+            if (!argument) {
+                return nullptr;
+            }
+            pattern->arguments.push_back(std::move(argument));
+            if (!match(TokenKind::Comma)) {
+                break;
+            }
+        }
+        if (!expect(TokenKind::RParen, "')' after the patterns of the case")) {
+            return nullptr;
+        }
+        return pattern;
+    }
+    pattern->value = parse_pattern_literal();
+    if (!pattern->value) {
+        return nullptr;
+    }
+    pattern->kind = PatternKind::Literal;
+    if (check(TokenKind::DotDot) || check(TokenKind::DotDotEq)) {
+        pattern->kind = PatternKind::Range;
+        pattern->inclusive = advance().kind == TokenKind::DotDotEq;
+        pattern->end = parse_pattern_literal();
+        if (!pattern->end) {
+            return nullptr;
+        }
+    }
+    return pattern;
+}
+
+ExprPtr CodeParser::parse_pattern_literal()
+{
+    const Token& token = peek();
+    switch (token.kind) {
+    case TokenKind::Minus: {
+        advance();
+        if (!check(TokenKind::IntLiteral)) {
+            error_at(peek(), "expected an integer after '-' in a pattern");
+            return nullptr;
+        }
+        return std::make_unique<UnaryExpr>(token.location, UnaryOp::Neg, parse_int_literal());
+    }
+    case TokenKind::IntLiteral: return parse_int_literal();
+    case TokenKind::CharLiteral: return parse_char_literal();
+    case TokenKind::KwTrue:
+    case TokenKind::KwFalse:
+        advance();
+        return std::make_unique<BoolLiteralExpr>(token.location, token.kind == TokenKind::KwTrue);
+    case TokenKind::FloatLiteral:
+        error_at(token, "floating-point values cannot be used as patterns");
+        return nullptr;
+    case TokenKind::StringLiteral:
+        error_at(token, "'str' patterns are not supported yet");
+        return nullptr;
+    default:
+        error_at(token, "expected a pattern, found " + describe_token(token));
+        return nullptr;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -533,7 +697,9 @@ ExprPtr CodeParser::parse_primary()
         return std::make_unique<BoolLiteralExpr>(token.location, token.kind == TokenKind::KwTrue);
     case TokenKind::KwNull: return std::make_unique<NullExpr>(advance().location);
     case TokenKind::Identifier:
-        if (peek(1).kind == TokenKind::LBrace) {
+        if (peek(1).kind == TokenKind::LBrace ||
+            (peek(1).kind == TokenKind::Dot && peek(2).kind == TokenKind::Identifier &&
+             peek(3).kind == TokenKind::LBrace)) {
             return parse_struct_literal();
         }
         advance();
@@ -546,22 +712,31 @@ ExprPtr CodeParser::parse_primary()
     case TokenKind::LBracket: return unsupported("list literals are");
     case TokenKind::LBrace: return unsupported("object values in code are");
     case TokenKind::KwFn: return unsupported("closures are");
-    case TokenKind::KwMatch: return unsupported("'match' expressions are");
+    case TokenKind::KwMatch:
+        error_at(token, "a 'match' expression can only be the value of 'let', an assignment or "
+                        "'return'");
+        return std::make_unique<ErrorExpr>(token.location);
     default: break;
     }
     error_at(token, "expected an expression, found " + describe_token(token));
     return std::make_unique<ErrorExpr>(token.location);
 }
 
-// Name '{' [field ':' expression {',' field ':' expression} [',']] '}'
+// Name ['.' Case] '{' [field ':' expression {',' field ':' expression} [',']] '}'
 ExprPtr CodeParser::parse_struct_literal()
 {
     const Token& name = advance();
     auto lit = std::make_unique<StructLiteralExpr>(name.location, name.text);
+    std::string written = lit->type_name;
+    if (match(TokenKind::Dot)) {
+        lit->case_location = peek().location;
+        lit->case_name = advance().text;
+        written += "." + lit->case_name;
+    }
     advance(); // '{'
     while (!check(TokenKind::RBrace)) {
         if (!check(TokenKind::Identifier)) {
-            error_at(peek(), "expected a field name in '" + lit->type_name + " { ... }', found " +
+            error_at(peek(), "expected a field name in '" + written + " { ... }', found " +
                                  describe_token(peek()));
             return lit;
         }

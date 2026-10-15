@@ -41,7 +41,7 @@ hana/
     decisions.md  설계 결정 기록
   src/
     support/   SourceLocation, 진단 메시지(DiagnosticEngine), UTF-8
-    lang/      OuterParser(JSON 층), CodeLexer/CodeParser(''' 코드), AST, Type, Symbol, Sema, Formatter (hana::lang)
+    lang/      OuterParser(JSON 층), CodeLexer/CodeParser(''' 코드), AST, Type, Symbol, Sema(+ sema_match), MoveChecker, Formatter (hana::lang)
     codegen/   LLVM IR 생성, 최적화, 오브젝트 파일 출력 (hana::codegen)
     driver/    check / fmt / build / run 파이프라인, 링커 호출 (hana::driver)
     cli/       hana 실행 파일

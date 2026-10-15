@@ -1,0 +1,1 @@
+match_syntax.hana:3:17: error: a 'match' expression can only be the value of 'let', an assignment or 'return'
