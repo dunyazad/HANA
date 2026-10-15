@@ -50,3 +50,9 @@
    - [초안] 기본 숫자 타입 `i8`~`i64`, `u8`~`u64`, `f32`, `f64`, 그 외 `bool`, `str`
 10. 메모리: GC 없음. RAII + 이동(move) 기본 + `unsafe` 영역에서만 원시 포인터.
 11. 주석: `'''` 코드 블록 안에서는 `#`, 바깥 JSON 부분에서는 `//`와 `/* */` (JSON5와 같은 방식).
+12. 제어문과 논리 연산자 (`'''` 안): Python 표기를 따른다.
+    - `if`/`elif`/`else`, `while`, `for x in xs`, `break`, `continue`, `return`, `match`
+    - 논리 연산자 `and`, `or`, `not`
+    - [초안] `match`의 갈래는 `패턴: 본문` (`Circle(r): return 3.14159 * r * r`)
+13. 에러 처리: `Result<T, E>` 값과 `?` 연산자. 예외는 없다.
+14. 모듈: 파일 하나 = 모듈 하나. 최상위 객체의 `use` 키로 가져오고 (`use: ["std.io", "gui"]`), 공개할 이름 앞에 `pub`을 붙인다 (`pub area: fn ...`).
