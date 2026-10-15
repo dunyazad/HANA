@@ -1,12 +1,10 @@
 # HANA
 
-GUI, 3D, 일반 로직, 시스템 프로그래밍까지 C++이 다룰 수 있는 범위를 모두 포함하는 범용 프로그래밍 언어.
-
 - 프로젝트/언어 공식 표기: `HANA` (문서, 로고, 제목, 창 제목 등 사람이 읽는 곳은 항상 대문자)
-- 코드 식별자는 소문자 유지: 확장자 `.hana`, CLI `hana`, 네임스페이스 `hana::`, CMake 타깃 `hana`
+- 코드 식별자는 소문자 유지: 확장자 `.hana`, CLI `hana`, 네임스페이스 `hana::`
 - 매크로/상수 접두사는 대문자: `HANA_VERSION`, `HANA_API` 등
 - 저장소 이름, 패키지 이름 등 식별용 이름: `hana` (`hana-lang`, `hanalang` 같은 별칭은 쓰지 않는다)
-- 컴파일러 구현 언어: C++ (C++20)
+- 구현 언어: C++ (C++20)
 - 빌드: CMake
 
 ## 작업 규칙 (반드시 지킬 것)
@@ -21,83 +19,4 @@ GUI, 3D, 일반 로직, 시스템 프로그래밍까지 C++이 다룰 수 있는
 
 ## 확정된 설계 결정
 
-1. 실행 방식: 네이티브 컴파일. 자체 프론트엔드 -> LLVM IR -> 네이티브 코드 (x64, ARM, WASM 등 LLVM 타깃).
-2. 메모리 모델: RAII + 이동(move) 기본 + unsafe.
-   - 소멸자로 자원을 해제한다. GC는 없다.
-   - 값은 기본적으로 이동된다. 공유는 명시적인 참조 카운트 등으로 표현한다.
-   - 참조 타입은 없다. 함수 인자에 전달 방식(읽기 전용 / `inout` / `sink`)을 붙이고 실제 전달은 컴파일러가 정한다. 인자는 함수 밖에 저장할 수 없다.
-   - 원시 포인터 `*T`의 생성, 역참조, 산술은 `unsafe` 영역에서만 허용한다.
-3. GUI와 3D의 위치: 언어 코어는 범용으로 두고, GUI/3D는 표준 라이브러리로 제공한다.
-   - 선언형 UI 작성에 필요한 기능(블록 문법, 반응형 상태 등)은 특정 라이브러리 전용이 아닌 범용 언어 기능으로 넣는다.
-   - 사용자가 만든 위젯/노드/타입은 표준 라이브러리의 것과 똑같은 지위를 갖는다.
-4. 선언: `fn`, `let`(불변), `var`(가변), 타입은 이름 뒤 `: Type`, 반환 타입 `-> Type`.
-5. 타입 확장: `struct` + `trait` + 제네릭. 클래스 상속은 없다.
-6. 에러 처리: `Result<T, E>` + `?` 연산자. 예외는 없다.
-7. C++ 연동: 1단계 C ABI, 이후 clang 기반 C++ 헤더 바인딩 생성 도구. C++ 템플릿/클래스 직접 연동은 하지 않는다.
-8. 접근자: 컨테이너 내부는 첨자(`x[i]`)/프로퍼티 접근자로만 빌려주고, 빌린 값은 그 식 안에서만 유효하다.
-9. 어휘: 주석 `//`, `/* */`(중첩 가능). 문장 구분은 줄바꿈 또는 `;`, `( )`/`[ ]` 안이거나 연산자, `,`, `:`, `.`로 끝난 줄은 이어진다.
-10. 제어문: `if/else`, `while`, `loop`, `for x in xs`, `match`, `break`, `continue`. `if`와 `match`는 식으로도 쓴다.
-11. 모듈: 파일 하나 = 모듈 하나, `import`, `pub`, 패키지 설정 `hana.toml`.
-12. 동시성: 1단계 OS 스레드 + 채널 + `Mutex<T>`, 스레드 간 전달 가능 타입은 컴파일러가 검사. `async`는 나중에.
-13. enum: 대수적 데이터 타입. `Option`, `Result`도 enum. `match`는 모든 경우를 다뤄야 한다.
-14. 클로저: 캡처는 기본 읽기, `inout`/`sink`로 명시. 읽기/`inout` 캡처 클로저는 저장/반환 불가, 저장하는 콜백과 스레드로 넘기는 클로저는 `sink` 캡처만.
-15. 연산자: C 계열 + 복합 대입, 오버로딩은 trait 구현.
-16. 리터럴: 정수 접미사(`10u8`), 16진/2진, `_` 구분자, 문자열 보간 `"{expr}"`, 리스트 `[1, 2, 3]`.
-17. 선언형 작성: GUI/3D 전용 문법 없이 범용 기능 두 가지로 한다.
-    - 블록 초기화 `Type { field: value; Child { ... } }`. 이름 없는 값은 자식 trait을 구현한 타입의 자식이 된다.
-    - 반응형 값 `Signal<T>`. `Binding<T>` 필드에 쓴 식은 읽은 Signal이 바뀌면 다시 계산되고, 양방향은 `bind`로 명시한다.
-    - Signal 갱신은 연산자 trait으로 `count += 1`, `count = 0`처럼 쓴다.
-18. 복사: 기본 타입과 원시 포인터는 `Copy`. 사용자 타입은 `struct Point: Copy`처럼 명시하고 모든 필드가 `Copy`여야 한다. 소멸자가 있는 타입은 `Copy` 불가.
-19. 표준 라이브러리 구성: `core`(OS 없이 동작), `std`(파일, 스레드, 네트워크), `gui`, `gfx`(3D), `platform`(창, 입력). GPU 계층은 WebGPU(`webgpu.h`), 네이티브는 Dawn, 웹은 Emscripten.
-20. 빌드/실행: 배포는 AOT 컴파일. 개발 중에는 LLVM ORC JIT로 실행하고 바뀐 함수만 다시 컴파일해 교체하는 핫 리로드를 지원한다 (컴파일러가 동작한 뒤 구현).
-
-언어 정의의 세부와 각 항목의 상태([확정]/[초안]/[미정])는 `docs/language.md`가 기준이다. 문법을 바꾸면 이 문서를 먼저 고친다.
-
-## 디렉터리 구조
-
-```
-hana/
-  CMakeLists.txt
-  src/
-    support/   SourceLocation, 진단 메시지(DiagnosticEngine), UTF-8
-    lang/      Token, Lexer, AST, Parser, Type, Symbol, Sema (hana::lang)
-    codegen/   LLVM IR 생성, 최적화, 오브젝트 파일 출력 (hana::codegen)
-    driver/    check / build / run 파이프라인, 링커 호출 (hana::driver)
-    cli/       hana 실행 파일
-  docs/
-    language.md  언어 정의
-  examples/
-  tests/
-    unit/        Lexer/Parser/Sema 단위 테스트
-    e2e/run/     <이름>.hana 를 실행해 <이름>.out(표준 출력), .status(종료 코드), .stderr(포함 문구)와 비교
-    e2e/errors/  <이름>.hana 의 진단 메시지가 <이름>.err 의 각 줄을 포함하는지 확인
-```
-
-## 빌드와 테스트
-
-필요: CMake 3.20+, C++20 컴파일러, LLVM 18 개발 패키지 (Ubuntu: `llvm-18-dev`), 링크용 `cc`.
-
-```
-cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
-cmake --build build
-ctest --test-dir build
-./build/hana run examples/hello.hana
-./build/hana check --tokens --ast examples/hello.hana
-./build/hana build --emit-ir examples/hello.hana
-```
-
-## 아직 정하지 않은 것
-
-- 문법 세부: `docs/language.md`의 미정 항목 참고
-- 2D 렌더러를 직접 구현할지, Skia Graphite(Dawn 위)를 쓸지
-- 물리 엔진 등 3D 표준 라이브러리 세부
-
-## 로드맵 [초안]
-
-1. [완료] 컴파일러 1단계: Lexer -> Parser/AST -> 의미 분석 -> LLVM IR 생성. `hana run hello.hana` 동작. 지원 범위는 `docs/language.md` 13절
-2. [다음 작업] 언어 코어 확장: struct, enum, trait, 제네릭, 클로저, 모듈
-3. `core` / `std` 표준 라이브러리, C ABI 연동
-4. JIT 실행과 핫 리로드
-5. `platform`, `gui` (WebGPU 2D 렌더러)
-6. `gfx` (3D)
-7. WASM, 모바일 타깃
+(없음)

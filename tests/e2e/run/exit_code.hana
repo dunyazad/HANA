@@ -1,4 +1,0 @@
-fn main() -> i32 {
-    println("returning 7")
-    return 7
-}

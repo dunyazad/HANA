@@ -1,9 +1,0 @@
-fn divide(a: i32, b: i32) -> i32 {
-    return a / b
-}
-
-fn main() {
-    println("before")
-    println("{divide(1, 0)}")
-    println("not reached")
-}
