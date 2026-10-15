@@ -1413,7 +1413,8 @@ void Sema::check_inout_argument(Expr& arg, const Type* param_type, std::vector<P
 }
 
 // While a call runs, a place passed as inout must not be reachable through
-// any other argument or the receiver.
+// any other argument or the receiver. A Copy value read by the call is
+// copied before the call starts, so it may overlap an inout place.
 void Sema::check_inout_exclusivity(CallExpr& call, const FunctionSymbol& function,
                                    const std::vector<Place>& inout_places,
                                    const std::optional<Place>& receiver)
@@ -1440,6 +1441,9 @@ void Sema::check_inout_exclusivity(CallExpr& call, const FunctionSymbol& functio
         }
     }
     for (const Place& read : reads) {
+        if (is_copy_type(read.expr->type)) {
+            continue;
+        }
         for (const Place& written : inout_places) {
             if (places_overlap(read, written)) {
                 diagnostics_->error(start_location(*read.expr), "'" + place_text(*read.expr) +

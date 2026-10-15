@@ -67,7 +67,7 @@ TEST(sema_inout_rules)
   ''',
 })");
     EXPECT(r->has_error("passed as inout more than once"));
-    EXPECT(r->has_error("passed as inout and also read"));
+    EXPECT(!r->has_error("passed as inout and also read")); // 'x' is Copy
     EXPECT(r->has_error("must be marked with '&'"));
     EXPECT(r->has_error("not mutable"));
 }
@@ -352,4 +352,23 @@ TEST(sema_cannot_move_out_of_read_or_inout_params)
     EXPECT(check("{ P: struct { s: str }, f: fn<(inout p: P)> '''\n  let q = p\n''' }")
                ->has_error("inout parameter"));
     EXPECT(!check("{ P: struct { s: str }, f: fn<P(sink p: P)> p }")->diagnostics.has_errors());
+}
+
+TEST(sema_copy_read_may_overlap_inout)
+{
+    auto r = check(R"({
+  V: struct copy { x: i32, m: fn<(inout self, n: i32)> self.x += n, w: fn<(self, inout v: V)> pass },
+  P: struct { s: str, n: i32, hit: fn<(inout self, n: i32)> self.n -= n },
+  look: fn<(inout p: P, q: P)> pass,
+  f: fn '''
+    var v = V { x: 1 }
+    v.m(v.x)
+    v.w(&v)
+    var p = P { s: "a", n: 1 }
+    p.hit(p.n)
+    look(&p, p)
+  ''',
+})");
+    EXPECT(r->error_count() == 1);
+    EXPECT(r->has_error("'p' is passed as inout and also read"));
 }

@@ -41,12 +41,14 @@ std::string mangle_function_name(const std::string& name)
     return "hana." + name;
 }
 
-// Read parameters of struct type are passed by pointer, so the value is not
-// copied; inout parameters always are. Everything else is passed by value.
+// Read parameters of a struct type that is not Copy are passed by pointer,
+// so the value is not copied; inout parameters always are. Everything else,
+// Copy values included, is passed by value: a Copy argument is read before
+// the call, so it stays correct when it overlaps an inout argument.
 bool passed_by_pointer(ParamConvention convention, const Type* type)
 {
     return convention == ParamConvention::Inout ||
-           (convention == ParamConvention::Read && type->is_struct());
+           (convention == ParamConvention::Read && type->is_struct() && !is_copy_type(type));
 }
 
 struct LoopTargets {

@@ -1,0 +1,40 @@
+// A Copy value read by a call is copied before the call starts, so it may
+// overlap an inout argument and keeps the value it had at the call.
+{
+  V: struct copy {
+    x: i32,
+    y: i32,
+
+    add: fn<(inout self, n: i32)> '''
+      self.x += n
+      self.x += n
+    ''',
+    absorb: fn<(inout self, other: V)> '''
+      self.x = 0
+      self.y += other.x
+    ''',
+    peek: fn<i32(self, inout v: V)> '''
+      v.x = 100
+      return self.x
+    ''',
+  },
+
+  twice: fn<(inout a: i32, b: i32)> '''
+    a += b
+    a += b
+  ''',
+
+  main: fn '''
+    var n = 3
+    twice(&n, n)
+    print(n)
+    var v = V { x: 5, y: 1 }
+    v.add(v.x)
+    print(v.x)
+    v.absorb(v)
+    print(f"{v.x} {v.y}")
+    v.x = 7
+    print(v.peek(&v))
+    print(v.x)
+  ''',
+}
