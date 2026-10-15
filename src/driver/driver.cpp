@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <system_error>
 
 #include <unistd.h>
@@ -19,6 +20,7 @@
 #include "codegen/codegen.h"
 #include "driver/process.h"
 #include "lang/code_lexer.h"
+#include "lang/formatter.h"
 #include "lang/outer_parser.h"
 #include "lang/sema.h"
 #include "support/diagnostic.h"
@@ -236,8 +238,49 @@ int run_check(const CheckOptions& options)
     if (options.dump_ast && frontend.module) {
         std::fputs(lang::dump_module(*frontend.module).c_str(), stdout);
     }
-    print_diagnostics(frontend);
+    if (options.json_diagnostics) {
+        std::fputs(diagnostics_to_json(frontend.file, frontend.diagnostics.diagnostics()).c_str(),
+                   stdout);
+    } else {
+        print_diagnostics(frontend);
+    }
     return ok ? kExitOk : kExitCompileError;
+}
+
+int run_format(const FormatOptions& options)
+{
+    Frontend frontend;
+    if (!read_source(options.path, frontend.file)) {
+        return kExitUsage;
+    }
+    const std::optional<std::string> formatted =
+        lang::format_source(frontend.file, frontend.diagnostics);
+    if (!formatted) {
+        print_diagnostics(frontend);
+        tool_error("'" + options.path + "' has syntax errors and was not formatted");
+        return kExitCompileError;
+    }
+    const bool changed = *formatted != frontend.file.text;
+    if (options.to_stdout) {
+        std::fputs(formatted->c_str(), stdout);
+        return kExitOk;
+    }
+    if (options.check_only) {
+        if (changed) {
+            std::fprintf(stderr, "%s: not formatted\n", options.path.c_str());
+        }
+        return changed ? kExitCompileError : kExitOk;
+    }
+    if (!changed) {
+        return kExitOk;
+    }
+    std::ofstream out(options.path, std::ios::out | std::ios::binary | std::ios::trunc);
+    out << *formatted;
+    if (!out) {
+        tool_error("cannot write '" + options.path + "'");
+        return kExitToolFailure;
+    }
+    return kExitOk;
 }
 
 int run_build(const BuildOptions& options)

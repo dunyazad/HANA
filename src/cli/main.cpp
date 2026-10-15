@@ -18,13 +18,18 @@ void print_usage(std::FILE* out)
                "  hana run [-O] <file.hana> [-- args...]   build and run a program\n"
                "  hana build [-O] [-o <output>] <file.hana> build an executable\n"
                "  hana build --emit-ir [-O] <file.hana>     print LLVM IR\n"
-               "  hana check [--tokens] [--ast] <file.hana> check a source file\n"
+               "  hana check [--tokens] [--ast] [--format json] <file.hana>\n"
+               "                                            check a source file\n"
+               "  hana fmt [--check | --stdout] <file.hana> format a source file\n"
                "  hana --version\n"
                "\n"
                "options:\n"
                "  -O          optimize\n"
                "  --tokens    print the token stream\n"
                "  --ast       print the syntax tree\n"
+               "  --format json  print diagnostics as JSON on standard output\n"
+               "  --check     (fmt) fail if the file is not formatted\n"
+               "  --stdout    (fmt) print the formatted file instead of rewriting it\n"
                "\n"
                "environment:\n"
                "  HANA_CC     C compiler used for linking (default: cc)\n",
@@ -49,16 +54,41 @@ bool take_source_path(std::string_view arg, std::string& path)
 
 bool parse_check(const std::vector<std::string_view>& args, hana::driver::CheckOptions& options)
 {
-    for (std::string_view arg : args) {
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
         if (arg == "--tokens") {
             options.dump_tokens = true;
         } else if (arg == "--ast") {
             options.dump_ast = true;
+        } else if (arg == "--format") {
+            if (i + 1 >= args.size() || (args[i + 1] != "json" && args[i + 1] != "text")) {
+                return usage_error("'--format' takes 'json' or 'text'");
+            }
+            options.json_diagnostics = args[++i] == "json";
         } else if (arg.starts_with("-")) {
             return usage_error("unknown option '" + std::string(arg) + "' for 'check'");
         } else if (!take_source_path(arg, options.path)) {
             return false;
         }
+    }
+    return !options.path.empty() || usage_error("missing source file");
+}
+
+bool parse_format(const std::vector<std::string_view>& args, hana::driver::FormatOptions& options)
+{
+    for (std::string_view arg : args) {
+        if (arg == "--check") {
+            options.check_only = true;
+        } else if (arg == "--stdout") {
+            options.to_stdout = true;
+        } else if (arg.starts_with("-")) {
+            return usage_error("unknown option '" + std::string(arg) + "' for 'fmt'");
+        } else if (!take_source_path(arg, options.path)) {
+            return false;
+        }
+    }
+    if (options.check_only && options.to_stdout) {
+        return usage_error("'--check' and '--stdout' cannot be combined");
     }
     return !options.path.empty() || usage_error("missing source file");
 }
@@ -129,6 +159,10 @@ int main(int argc, char** argv)
     if (command == "check") {
         hana::driver::CheckOptions options;
         return parse_check(rest, options) ? hana::driver::run_check(options) : kExitUsage;
+    }
+    if (command == "fmt") {
+        hana::driver::FormatOptions options;
+        return parse_format(rest, options) ? hana::driver::run_format(options) : kExitUsage;
     }
     if (command == "build") {
         hana::driver::BuildOptions options;

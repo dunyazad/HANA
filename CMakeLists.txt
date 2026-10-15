@@ -43,6 +43,7 @@ add_library(hana_lang STATIC
     src/lang/code_lexer.cpp
     src/lang/code_parser.cpp
     src/lang/outer_parser.cpp
+    src/lang/formatter.cpp
     src/lang/ast.cpp
     src/lang/types.cpp
     src/lang/sema.cpp

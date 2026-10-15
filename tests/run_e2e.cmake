@@ -1,5 +1,5 @@
 # Runs one end-to-end test. Inputs: HANA (tool path), SOURCE (.hana file),
-# MODE ("run" or "error"). Optional <name>.flags holds extra 'hana run' options.
+# MODE ("run", "format" or "error"); TEMP_DIR for "format". Optional <name>.flags holds extra 'hana run' options.
 get_filename_component(dir ${SOURCE} DIRECTORY)
 get_filename_component(name ${SOURCE} NAME_WE)
 
@@ -32,6 +32,33 @@ if(MODE STREQUAL "run")
                 message(FATAL_ERROR "stderr lacks '${needle}'\n${errors}")
             endif()
         endforeach()
+    endif()
+elseif(MODE STREQUAL "format")
+    # The formatted program must be stable under a second format and must
+    # behave exactly like the original.
+    get_filename_component(work ${TEMP_DIR} ABSOLUTE)
+    file(MAKE_DIRECTORY ${work})
+    execute_process(COMMAND ${HANA} fmt --stdout ${SOURCE}
+        OUTPUT_FILE ${work}/${name}.hana RESULT_VARIABLE status)
+    if(NOT status EQUAL 0)
+        message(FATAL_ERROR "hana fmt failed with ${status}")
+    endif()
+    execute_process(COMMAND ${HANA} fmt --check ${work}/${name}.hana RESULT_VARIABLE status)
+    if(NOT status EQUAL 0)
+        message(FATAL_ERROR "formatting is not idempotent")
+    endif()
+    set(flags "")
+    if(EXISTS ${dir}/${name}.flags)
+        file(READ ${dir}/${name}.flags flags)
+        string(STRIP "${flags}" flags)
+        separate_arguments(flags)
+    endif()
+    execute_process(COMMAND ${HANA} run ${flags} ${SOURCE}
+        OUTPUT_VARIABLE expected RESULT_VARIABLE expected_status)
+    execute_process(COMMAND ${HANA} run ${flags} ${work}/${name}.hana
+        OUTPUT_VARIABLE actual RESULT_VARIABLE actual_status)
+    if(NOT actual STREQUAL expected OR NOT actual_status STREQUAL expected_status)
+        message(FATAL_ERROR "formatted program behaves differently")
     endif()
 elseif(MODE STREQUAL "error")
     execute_process(COMMAND ${HANA} check ${SOURCE}

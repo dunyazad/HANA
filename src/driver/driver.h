@@ -9,6 +9,13 @@ struct CheckOptions {
     std::string path;
     bool dump_tokens = false;
     bool dump_ast = false;
+    bool json_diagnostics = false; // --format json: diagnostics as JSON on stdout
+};
+
+struct FormatOptions {
+    std::string path;
+    bool check_only = false; // --check: report whether the file would change
+    bool to_stdout = false;  // --stdout: print instead of rewriting the file
 };
 
 struct BuildOptions {
@@ -31,6 +38,8 @@ constexpr int kExitUsage = 2;
 constexpr int kExitToolFailure = 3;
 
 int run_check(const CheckOptions& options);
+// Rewrites the file in the canonical layout (see lang/formatter.h).
+int run_format(const FormatOptions& options);
 int run_build(const BuildOptions& options);
 // Builds into a temporary directory, runs the program and returns its exit
 // code.
