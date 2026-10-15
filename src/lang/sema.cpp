@@ -69,7 +69,7 @@ const UnaryExpr* as_inout_mark(const Expr& expr)
 } // namespace
 
 Sema::Sema(DiagnosticEngine& diagnostics)
-    : diagnostics_(diagnostics)
+    : diagnostics_(&diagnostics)
 {
 }
 
@@ -113,9 +113,9 @@ void Sema::declare_intrinsics()
 void Sema::declare_function(FnDecl& function)
 {
     if (const FunctionSymbol* existing = lookup_function(function.name)) {
-        diagnostics_.error(function.location, "function '" + function.name + "' is already defined");
+        diagnostics_->error(function.location, "function '" + function.name + "' is already defined");
         if (existing->decl != nullptr) {
-            diagnostics_.note(existing->decl->location, "previous definition is here");
+            diagnostics_->note(existing->decl->location, "previous definition is here");
         }
         return;
     }
@@ -138,11 +138,11 @@ void Sema::declare_function(FnDecl& function)
 void Sema::check_main_signature(const FunctionSymbol& symbol)
 {
     if (!symbol.param_types.empty()) {
-        diagnostics_.error(symbol.decl->location, "'main' must not take parameters");
+        diagnostics_->error(symbol.decl->location, "'main' must not take parameters");
     }
     const Type* ret = symbol.return_type;
     if (!ret->is_void() && ret != i32_type() && !ret->is_error()) {
-        diagnostics_.error(symbol.decl->return_type->location,
+        diagnostics_->error(symbol.decl->return_type->location,
                            "'main' must return nothing or 'i32', found " + quoted(ret));
     }
 }
@@ -152,6 +152,12 @@ void Sema::check_function_body(FnDecl& function)
     if (function.symbol == nullptr) {
         return; // duplicate definition, already reported
     }
+    infer_literal_variables(function);
+    check_body_once(function);
+}
+
+void Sema::check_body_once(FnDecl& function)
+{
     return_type_ = function.symbol->return_type;
     push_scope();
     for (std::size_t i = 0; i < function.params.size(); ++i) {
@@ -164,10 +170,137 @@ void Sema::check_function_body(FnDecl& function)
     const bool terminates = check_block(function.body);
     pop_scope();
     if (!terminates && !return_type_->is_void() && !return_type_->is_error()) {
-        diagnostics_.error(function.body.end_location,
+        diagnostics_->error(function.body.end_location,
                            "function '" + function.name + "' must return a value of type " +
                                quoted(return_type_) + " on every path");
     }
+}
+
+// A variable initialized with an untyped literal and no declared type takes
+// the type of its first typed use in the function: an argument, an operand
+// next to a typed value, an assignment, a return. Inference passes run with
+// diagnostics discarded and repeat until no new type is found, so chains
+// like 'var a = 0; var b = a; f(b)' resolve. Unresolved variables get the
+// literal's default type (i32 or f64).
+void Sema::infer_literal_variables(FnDecl& function)
+{
+    pending_.clear();
+    let_types_.clear();
+    collect_pending_lets(function.body);
+    if (pending_.empty()) {
+        return;
+    }
+    DiagnosticEngine scratch;
+    DiagnosticEngine* real = diagnostics_;
+    diagnostics_ = &scratch;
+    inferring_ = true;
+    for (std::size_t round = 0; round <= pending_.size(); ++round) {
+        bound_new_ = false;
+        let_placeholders_.clear();
+        placeholder_lets_.clear();
+        check_body_once(function);
+        if (!bound_new_) {
+            break;
+        }
+    }
+    inferring_ = false;
+    diagnostics_ = real;
+    let_placeholders_.clear();
+    placeholder_lets_.clear();
+    for (const PendingLet& pending : pending_) {
+        let_types_.try_emplace(pending.let, pending.is_float ? f64_type() : i32_type());
+    }
+}
+
+void Sema::collect_pending_lets(Block& block)
+{
+    for (auto& statement : block.statements) {
+        switch (statement->kind) {
+        case StmtKind::Let: {
+            const auto& let = static_cast<const LetStmt&>(*statement);
+            if (!let.declared_type && is_untyped_literal(*let.init)) {
+                const Expr* literal = let.init.get();
+                if (literal->kind == ExprKind::Unary) {
+                    literal = static_cast<const UnaryExpr&>(*literal).operand.get();
+                }
+                pending_.push_back(PendingLet{&let, literal->kind == ExprKind::FloatLiteral});
+            }
+            break;
+        }
+        case StmtKind::If: {
+            auto& stmt = static_cast<IfStmt&>(*statement);
+            collect_pending_lets(stmt.then_block);
+            if (stmt.else_block) {
+                collect_pending_lets(*stmt.else_block);
+            }
+            break;
+        }
+        case StmtKind::While: collect_pending_lets(static_cast<WhileStmt&>(*statement).body); break;
+        default: break;
+        }
+    }
+}
+
+// The type a pending literal variable gets in the current pass: its found
+// type, a placeholder while inferring, or null when the let is not pending.
+const Type* Sema::literal_variable_type(const LetStmt& let)
+{
+    if (auto found = let_types_.find(&let); found != let_types_.end()) {
+        return found->second;
+    }
+    if (!inferring_) {
+        return nullptr;
+    }
+    for (const PendingLet& pending : pending_) {
+        if (pending.let != &let) {
+            continue;
+        }
+        if (auto existing = let_placeholders_.find(&let); existing != let_placeholders_.end()) {
+            return existing->second;
+        }
+        Type& placeholder = placeholder_storage_.emplace_back(Type{
+            pending.is_float ? TypeKind::Float : TypeKind::Int,
+            pending.is_float ? "{float}" : "{integer}", 64, true});
+        placeholder.is_literal_var = true;
+        let_placeholders_[&let] = &placeholder;
+        placeholder_lets_[&placeholder] = &let;
+        return &placeholder;
+    }
+    return nullptr;
+}
+
+// Records 'concrete' as the type of the variable behind 'placeholder'.
+// Integer literals may become any numeric type, float literals only floats.
+bool Sema::bind(const Type* placeholder, const Type* concrete)
+{
+    auto it = placeholder_lets_.find(placeholder);
+    if (it == placeholder_lets_.end() || concrete->is_literal_var || concrete->is_error()) {
+        return false;
+    }
+    const bool compatible = placeholder->is_float() ? concrete->is_float() : concrete->is_numeric();
+    if (!compatible) {
+        return false;
+    }
+    if (let_types_.try_emplace(it->second, concrete).second) {
+        bound_new_ = true;
+    }
+    return true;
+}
+
+// Returns the common type of a and b, binding a placeholder on the way, or
+// null when they do not match.
+const Type* Sema::unify(const Type* a, const Type* b)
+{
+    if (a == b) {
+        return a;
+    }
+    if (a->is_literal_var && bind(a, b)) {
+        return b;
+    }
+    if (b->is_literal_var && bind(b, a)) {
+        return a;
+    }
+    return nullptr;
 }
 
 const Type* Sema::resolve_type(const TypeExpr& type)
@@ -175,7 +308,7 @@ const Type* Sema::resolve_type(const TypeExpr& type)
     if (const Type* builtin = find_builtin_type(type.name)) {
         return builtin;
     }
-    diagnostics_.error(type.location, "unknown type '" + type.name + "'");
+    diagnostics_->error(type.location, "unknown type '" + type.name + "'");
     return error_type();
 }
 
@@ -213,13 +346,14 @@ bool Sema::check_statement(Stmt& stmt)
 
 bool Sema::check_let(LetStmt& let)
 {
-    const Type* declared = let.declared_type ? resolve_type(*let.declared_type) : nullptr;
+    const Type* declared =
+        let.declared_type ? resolve_type(*let.declared_type) : literal_variable_type(let);
     const Type* init = check_expr(*let.init, declared);
     const Type* var_type = declared;
     if (declared != nullptr) {
         expect_type(declared, init, let.init->location);
     } else if (init->is_void()) {
-        diagnostics_.error(let.init->location, "expression has no value to store");
+        diagnostics_->error(let.init->location, "expression has no value to store");
         var_type = error_type();
     } else {
         var_type = init;
@@ -246,7 +380,7 @@ const VarSymbol* Sema::check_assignment_target(Expr& target)
     if (target.kind != ExprKind::Name) {
         if (target.kind != ExprKind::Error) {
             check_expr(target, nullptr);
-            diagnostics_.error(target.location, "only variables can be assigned to for now");
+            diagnostics_->error(target.location, "only variables can be assigned to for now");
         }
         return nullptr;
     }
@@ -258,15 +392,15 @@ const VarSymbol* Sema::check_assignment_target(Expr& target)
     }
     if (!var->is_mutable) {
         if (var->kind == VarKind::Param) {
-            diagnostics_.error(target.location, "cannot assign to parameter '" + var->name +
+            diagnostics_->error(target.location, "cannot assign to parameter '" + var->name +
                                                     "'; declare it 'inout' to modify the "
                                                     "caller's value");
         } else {
-            diagnostics_.error(target.location, "cannot assign to '" + var->name +
+            diagnostics_->error(target.location, "cannot assign to '" + var->name +
                                                     "' because it is declared with 'let'; use "
                                                     "'var' to make it mutable");
         }
-        diagnostics_.note(var->location, "'" + var->name + "' is declared here");
+        diagnostics_->note(var->location, "'" + var->name + "' is declared here");
     }
     return var;
 }
@@ -275,7 +409,7 @@ bool Sema::check_expression_statement(ExprStmt& stmt)
 {
     check_expr(*stmt.expr, nullptr);
     if (stmt.expr->kind != ExprKind::Call && stmt.expr->kind != ExprKind::Error) {
-        diagnostics_.error(stmt.expr->location,
+        diagnostics_->error(stmt.expr->location,
                            "this expression has no effect; only calls can be used as statements");
     }
     return false;
@@ -286,14 +420,14 @@ bool Sema::check_return(ReturnStmt& ret)
     if (ret.value) {
         const Type* value = check_expr(*ret.value, return_type_);
         if (return_type_->is_void()) {
-            diagnostics_.error(ret.value->location,
+            diagnostics_->error(ret.value->location,
                                "this function does not return a value; remove the value after "
                                "'return'");
         } else {
             expect_type(return_type_, value, ret.value->location);
         }
     } else if (!return_type_->is_void() && !return_type_->is_error()) {
-        diagnostics_.error(ret.location, "missing return value of type " + quoted(return_type_));
+        diagnostics_->error(ret.location, "missing return value of type " + quoted(return_type_));
     }
     return true;
 }
@@ -325,7 +459,7 @@ bool Sema::check_while(WhileStmt& stmt)
 bool Sema::check_jump(Stmt& stmt, const char* keyword)
 {
     if (loops_.empty()) {
-        diagnostics_.error(stmt.location, std::string("'") + keyword + "' outside of a loop");
+        diagnostics_->error(stmt.location, std::string("'") + keyword + "' outside of a loop");
     } else if (stmt.kind == StmtKind::Break) {
         loops_.back().has_break = true;
     }
@@ -358,9 +492,9 @@ const Type* Sema::check_expr(Expr& expr, const Type* expected)
         type = check_string_literal(static_cast<StringLiteralExpr&>(expr));
         break;
     case ExprKind::Null:
-        diagnostics_.error(expr.location, "'null' needs Option<T>, which is not supported yet");
+        diagnostics_->error(expr.location, "'null' needs Option<T>, which is not supported yet");
         break;
-    case ExprKind::Name: type = check_name(static_cast<NameExpr&>(expr)); break;
+    case ExprKind::Name: type = check_name(static_cast<NameExpr&>(expr), expected); break;
     case ExprKind::Conditional:
         type = check_conditional(static_cast<ConditionalExpr&>(expr), expected);
         break;
@@ -386,12 +520,12 @@ const Type* Sema::check_int_literal(IntLiteralExpr& lit, const Type* expected, b
     }
     lit.type = type;
     if (lit.overflowed) {
-        diagnostics_.error(lit.location, "integer literal is too large");
+        diagnostics_->error(lit.location, "integer literal is too large");
         return type;
     }
     if (type->is_integer() && !(negated && !type->is_signed) &&
         lit.value > max_magnitude(type, negated)) {
-        diagnostics_.error(lit.location, "integer literal " + std::string(negated ? "-" : "") +
+        diagnostics_->error(lit.location, "integer literal " + std::string(negated ? "-" : "") +
                                              lit.text + " does not fit in " + quoted(type));
     }
     return type;
@@ -414,7 +548,7 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
         return str_type();
     }
     if (!allow_interpolation_) {
-        diagnostics_.error(lit.location, "format strings f\"...\" are only supported directly "
+        diagnostics_->error(lit.location, "format strings f\"...\" are only supported directly "
                                          "inside print() and write() for now");
     }
     const bool saved = allow_interpolation_;
@@ -422,27 +556,30 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
     for (auto& part : lit.parts) {
         const Type* type = check_expr(*part, nullptr);
         if (type->is_void()) {
-            diagnostics_.error(part->location, "expression has no value to insert");
+            diagnostics_->error(part->location, "expression has no value to insert");
         }
     }
     allow_interpolation_ = saved;
     return str_type();
 }
 
-const Type* Sema::check_name(NameExpr& name)
+const Type* Sema::check_name(NameExpr& name, const Type* expected)
 {
     if (const VarSymbol* var = lookup_var(name.name)) {
         name.var = var;
+        if (var->type->is_literal_var && expected != nullptr) {
+            bind(var->type, expected);
+        }
         return var->type;
     }
     if (const FunctionSymbol* function = lookup_function(name.name)) {
         name.function = function;
-        diagnostics_.error(name.location, "'" + name.name +
+        diagnostics_->error(name.location, "'" + name.name +
                                               "' is a function; functions cannot be used as "
                                               "values yet, call it with '()'");
         return error_type();
     }
-    diagnostics_.error(name.location, "unknown name '" + name.name + "'");
+    diagnostics_->error(name.location, "unknown name '" + name.name + "'");
     return error_type();
 }
 
@@ -462,15 +599,16 @@ const Type* Sema::check_conditional(ConditionalExpr& cond, const Type* expected)
         return error_type();
     }
     if (then_type->is_void()) {
-        diagnostics_.error(cond.then_value->location, "this branch has no value");
+        diagnostics_->error(cond.then_value->location, "this branch has no value");
         return error_type();
     }
-    if (then_type != else_type) {
-        diagnostics_.error(cond.location, "the two branches of 'if ... else' have different types " +
+    const Type* common = unify(then_type, else_type);
+    if (common == nullptr) {
+        diagnostics_->error(cond.location, "the two branches of 'if ... else' have different types " +
                                               quoted(then_type) + " and " + quoted(else_type));
         return error_type();
     }
-    return then_type;
+    return common;
 }
 
 // Allowed: between numeric types, bool to integer, char to integer.
@@ -486,7 +624,7 @@ const Type* Sema::check_cast(CastExpr& cast)
         ((source->kind == TypeKind::Bool || source->kind == TypeKind::Char) && target->is_integer()) ||
         source == target;
     if (!allowed) {
-        diagnostics_.error(cast.location, "cannot convert " + quoted(source) + " to " +
+        diagnostics_->error(cast.location, "cannot convert " + quoted(source) + " to " +
                                               quoted(target) + " with 'as'");
         return error_type();
     }
@@ -505,7 +643,7 @@ const Type* Sema::check_unary(UnaryExpr& unary, const Type* expected)
         if (type->is_error() || type->is_float() || (type->is_integer() && type->is_signed)) {
             return type;
         }
-        diagnostics_.error(unary.location, "cannot negate a value of type " + quoted(type));
+        diagnostics_->error(unary.location, "cannot negate a value of type " + quoted(type));
         return error_type();
     }
     case UnaryOp::Not: {
@@ -518,12 +656,12 @@ const Type* Sema::check_unary(UnaryExpr& unary, const Type* expected)
         if (type->is_error() || type->is_integer()) {
             return type;
         }
-        diagnostics_.error(unary.location, "'~' needs an integer, found " + quoted(type));
+        diagnostics_->error(unary.location, "'~' needs an integer, found " + quoted(type));
         return error_type();
     }
     case UnaryOp::InoutMark:
         check_expr(*unary.operand, nullptr);
-        diagnostics_.error(unary.location, "'&' can only mark an argument for an inout parameter");
+        diagnostics_->error(unary.location, "'&' can only mark an argument for an inout parameter");
         return error_type();
     }
     return error_type();
@@ -560,14 +698,15 @@ const Type* Sema::check_binary_operands(BinaryExpr& binary, const Type* expected
     if (lhs->is_error() || rhs->is_error()) {
         return error_type();
     }
-    if (lhs != rhs) {
-        diagnostics_.error(binary.op_location, std::string("operands of '") +
+    const Type* common = unify(lhs, rhs);
+    if (common == nullptr) {
+        diagnostics_->error(binary.op_location, std::string("operands of '") +
                                                    binary_op_spelling(binary.op) +
                                                    "' have different types " + quoted(lhs) +
                                                    " and " + quoted(rhs));
         return error_type();
     }
-    return lhs;
+    return common;
 }
 
 const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
@@ -593,7 +732,7 @@ const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
     case BinaryOp::Eq:
     case BinaryOp::Ne:
         if (operand->kind == TypeKind::Str) {
-            diagnostics_.error(location, "comparing 'str' values is not supported yet");
+            diagnostics_->error(location, "comparing 'str' values is not supported yet");
             return error_type();
         }
         valid = operand->is_numeric() || operand->kind == TypeKind::Bool ||
@@ -613,7 +752,7 @@ const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
         break;
     }
     if (!valid) {
-        diagnostics_.error(location, std::string("operator '") + binary_op_spelling(op) +
+        diagnostics_->error(location, std::string("operator '") + binary_op_spelling(op) +
                                          "' cannot be applied to " + quoted(operand));
         return error_type();
     }
@@ -628,7 +767,7 @@ const Type* Sema::check_call(CallExpr& call)
             check_expr(*arg, nullptr);
         }
         if (!call.callee->type->is_error()) {
-            diagnostics_.error(call.location, "only named functions can be called for now");
+            diagnostics_->error(call.location, "only named functions can be called for now");
         }
         return error_type();
     }
@@ -636,11 +775,11 @@ const Type* Sema::check_call(CallExpr& call)
     callee.type = void_type();
     const FunctionSymbol* function = nullptr;
     if (lookup_var(callee.name) != nullptr) {
-        diagnostics_.error(callee.location, "'" + callee.name + "' is a variable, not a function");
+        diagnostics_->error(callee.location, "'" + callee.name + "' is a variable, not a function");
     } else {
         function = lookup_function(callee.name);
         if (function == nullptr) {
-            diagnostics_.error(callee.location, "unknown function '" + callee.name + "'");
+            diagnostics_->error(callee.location, "unknown function '" + callee.name + "'");
         }
     }
     if (function == nullptr) {
@@ -660,7 +799,7 @@ const Type* Sema::check_call(CallExpr& call)
 const Type* Sema::check_intrinsic_call(CallExpr& call, const FunctionSymbol& function)
 {
     if (call.args.size() != 1) {
-        diagnostics_.error(call.location, "'" + function.name + "' expects 1 argument, found " +
+        diagnostics_->error(call.location, "'" + function.name + "' expects 1 argument, found " +
                                               std::to_string(call.args.size()));
         for (auto& arg : call.args) {
             check_expr(*arg, nullptr);
@@ -671,7 +810,7 @@ const Type* Sema::check_intrinsic_call(CallExpr& call, const FunctionSymbol& fun
     const Type* type = check_expr(*call.args.front(), nullptr);
     allow_interpolation_ = false;
     if (type->is_void()) {
-        diagnostics_.error(call.args.front()->location, "expression has no value to print");
+        diagnostics_->error(call.args.front()->location, "expression has no value to print");
     }
     return void_type();
 }
@@ -679,7 +818,7 @@ const Type* Sema::check_intrinsic_call(CallExpr& call, const FunctionSymbol& fun
 void Sema::check_call_arguments(CallExpr& call, const FunctionSymbol& function)
 {
     if (call.args.size() != function.param_types.size()) {
-        diagnostics_.error(call.location, "'" + function.name + "' expects " +
+        diagnostics_->error(call.location, "'" + function.name + "' expects " +
                                               std::to_string(function.param_types.size()) +
                                               " argument(s), found " +
                                               std::to_string(call.args.size()));
@@ -698,7 +837,7 @@ void Sema::check_call_arguments(CallExpr& call, const FunctionSymbol& function)
         }
         if (const UnaryExpr* mark = as_inout_mark(arg)) {
             check_expr(*mark->operand, nullptr);
-            diagnostics_.error(arg.location, "'&' marks an inout argument, but parameter " +
+            diagnostics_->error(arg.location, "'&' marks an inout argument, but parameter " +
                                                  std::to_string(i + 1) + " of '" + function.name +
                                                  "' is not inout");
             continue;
@@ -715,14 +854,14 @@ void Sema::check_inout_argument(Expr& arg, const Type* param_type,
     const UnaryExpr* mark = as_inout_mark(arg);
     if (mark == nullptr) {
         check_expr(arg, param_type);
-        diagnostics_.error(arg.location,
+        diagnostics_->error(arg.location,
                            "an argument for an inout parameter must be marked with '&', as in "
                            "'&x'");
         return;
     }
     if (mark->operand->kind != ExprKind::Name) {
         check_expr(*mark->operand, nullptr);
-        diagnostics_.error(mark->operand->location, "only a variable can be passed as inout");
+        diagnostics_->error(mark->operand->location, "only a variable can be passed as inout");
         return;
     }
     auto& name = static_cast<NameExpr&>(*mark->operand);
@@ -732,9 +871,9 @@ void Sema::check_inout_argument(Expr& arg, const Type* param_type,
         return;
     }
     if (!name.var->is_mutable) {
-        diagnostics_.error(name.location, "cannot pass '" + name.name +
+        diagnostics_->error(name.location, "cannot pass '" + name.name +
                                               "' as inout because it is not mutable");
-        diagnostics_.note(name.var->location, "'" + name.name + "' is declared here");
+        diagnostics_->note(name.var->location, "'" + name.name + "' is declared here");
     }
     expect_type(param_type, type, name.location);
     inout_vars.push_back(name.var);
@@ -746,7 +885,7 @@ void Sema::check_inout_exclusivity(CallExpr& call, const FunctionSymbol& functio
     for (std::size_t i = 0; i < inout_vars.size(); ++i) {
         for (std::size_t j = i + 1; j < inout_vars.size(); ++j) {
             if (inout_vars[i] == inout_vars[j]) {
-                diagnostics_.error(call.location, "'" + inout_vars[i]->name +
+                diagnostics_->error(call.location, "'" + inout_vars[i]->name +
                                                       "' is passed as inout more than once in "
                                                       "this call");
             }
@@ -760,7 +899,7 @@ void Sema::check_inout_exclusivity(CallExpr& call, const FunctionSymbol& functio
         const VarSymbol* read = static_cast<const NameExpr&>(*call.args[i]).var;
         if (read != nullptr && std::find(inout_vars.begin(), inout_vars.end(), read) !=
                                    inout_vars.end()) {
-            diagnostics_.error(call.args[i]->location, "'" + read->name +
+            diagnostics_->error(call.args[i]->location, "'" + read->name +
                                                            "' is passed as inout and also read "
                                                            "in the same call");
         }
@@ -769,21 +908,21 @@ void Sema::check_inout_exclusivity(CallExpr& call, const FunctionSymbol& functio
 
 const Type* Sema::unsupported(Expr& expr, const std::string& what)
 {
-    diagnostics_.error(expr.location, what + " not supported yet");
+    diagnostics_->error(expr.location, what + " not supported yet");
     return error_type();
 }
 
 void Sema::expect_type(const Type* expected, const Type* actual, const SourceLocation& location)
 {
-    if (expected->is_error() || actual->is_error() || expected == actual) {
+    if (expected->is_error() || actual->is_error() || unify(expected, actual) != nullptr) {
         return;
     }
     if (actual->is_void()) {
-        diagnostics_.error(location, "expected a value of type " + quoted(expected) +
+        diagnostics_->error(location, "expected a value of type " + quoted(expected) +
                                          ", but this expression has no value");
         return;
     }
-    diagnostics_.error(location, "expected " + quoted(expected) + ", found " + quoted(actual));
+    diagnostics_->error(location, "expected " + quoted(expected) + ", found " + quoted(actual));
 }
 
 // ---------------------------------------------------------------------------
@@ -804,8 +943,8 @@ const VarSymbol* Sema::declare_var(const std::string& name, const Type* type, Va
 {
     auto& scope = scopes_.back();
     if (auto it = scope.find(name); it != scope.end()) {
-        diagnostics_.error(location, "'" + name + "' is already declared in this scope");
-        diagnostics_.note(it->second->location, "previous declaration is here");
+        diagnostics_->error(location, "'" + name + "' is already declared in this scope");
+        diagnostics_->note(it->second->location, "previous declaration is here");
     }
     VarSymbol& symbol = program_->vars.emplace_back();
     symbol.name = name;

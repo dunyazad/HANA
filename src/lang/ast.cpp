@@ -1,5 +1,8 @@
 #include "lang/ast.h"
 
+#include "lang/symbols.h"
+#include "lang/types.h"
+
 #include <string>
 #include <utility>
 
@@ -162,6 +165,8 @@ private:
         std::string header = std::string(let.is_mutable ? "var " : "let ") + let.name;
         if (let.declared_type) {
             header += ": " + let.declared_type->name;
+        } else if (let.symbol != nullptr && let.symbol->type != nullptr) {
+            header += ": " + std::string(let.symbol->type->name) + " (inferred)";
         }
         line(header);
         child(*let.init);

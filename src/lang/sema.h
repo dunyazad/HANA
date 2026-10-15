@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -30,6 +31,15 @@ private:
     void declare_function(FnDecl& function);
     void check_main_signature(const FunctionSymbol& symbol);
     void check_function_body(FnDecl& function);
+    void check_body_once(FnDecl& function);
+
+    // Literal variable inference ('var i = 0' takes the type of its first
+    // typed use, see docs/language.md)
+    void infer_literal_variables(FnDecl& function);
+    void collect_pending_lets(Block& block);
+    const Type* literal_variable_type(const LetStmt& let);
+    bool bind(const Type* placeholder, const Type* concrete);
+    const Type* unify(const Type* a, const Type* b);
     const Type* resolve_type(const TypeExpr& type);
 
     // Statements; each returns true when control never reaches the end.
@@ -50,7 +60,7 @@ private:
     const Type* check_int_literal(IntLiteralExpr& lit, const Type* expected, bool negated);
     const Type* check_float_literal(FloatLiteralExpr& lit, const Type* expected);
     const Type* check_string_literal(StringLiteralExpr& lit);
-    const Type* check_name(NameExpr& name);
+    const Type* check_name(NameExpr& name, const Type* expected = nullptr);
     const Type* check_conditional(ConditionalExpr& cond, const Type* expected);
     const Type* check_cast(CastExpr& cast);
     const Type* check_unary(UnaryExpr& unary, const Type* expected);
@@ -75,7 +85,13 @@ private:
     const VarSymbol* lookup_var(const std::string& name) const;
     const FunctionSymbol* lookup_function(const std::string& name) const;
 
-    DiagnosticEngine& diagnostics_;
+    struct PendingLet {
+        const LetStmt* let;
+        bool is_float;
+    };
+
+    // Points at a scratch engine while inference passes run.
+    DiagnosticEngine* diagnostics_;
     std::unique_ptr<Program> program_;
     std::unordered_map<std::string, const FunctionSymbol*> functions_;
     std::vector<std::unordered_map<std::string, const VarSymbol*>> scopes_;
@@ -84,6 +100,14 @@ private:
     // True only while checking the argument of print/write, the one place
     // where format strings are supported in this stage.
     bool allow_interpolation_ = false;
+
+    std::vector<PendingLet> pending_;
+    std::unordered_map<const LetStmt*, const Type*> let_types_;
+    std::unordered_map<const LetStmt*, const Type*> let_placeholders_;
+    std::unordered_map<const Type*, const LetStmt*> placeholder_lets_;
+    std::deque<Type> placeholder_storage_;
+    bool inferring_ = false;
+    bool bound_new_ = false;
 };
 
 } // namespace hana::lang

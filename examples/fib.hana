@@ -5,7 +5,7 @@
   ''',
 
   main: fn '''
-    var i: i64 = 0
+    var i = 0
     while i < 10:
       print(f"fib({i}) = {fib(i)}")
       i += 1

@@ -1,0 +1,17 @@
+{
+  fib: fn<i64(n: i64)> '''
+    if n < 2: return n
+    return fib(n - 1) + fib(n - 2)
+  ''',
+
+  main: fn '''
+    var i = 0
+    while i < 5:
+      write(f"{fib(i)} ")
+      i += 1
+    let big = 3_000_000_000
+    let scaled = big * 2
+    let wide: i64 = scaled
+    print(wide)
+  ''',
+}

@@ -143,3 +143,72 @@ TEST(sema_expression_statement_must_be_call)
     auto r = check("{ f: fn<(a: i32)> '''\n  a + 1\n''' }");
     EXPECT(r->has_error("has no effect"));
 }
+
+namespace {
+
+const Type* let_type(const Compiled& r, const std::string& name)
+{
+    for (const auto& statement : r.module->functions.back()->body.statements) {
+        if (statement->kind == StmtKind::Let) {
+            const auto& let = static_cast<const LetStmt&>(*statement);
+            if (let.name == name && let.symbol != nullptr) {
+                return let.symbol->type;
+            }
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST(sema_literal_variable_takes_first_typed_use)
+{
+    auto r = check(R"({
+  takes64: fn<(x: i64)> pass,
+  half: fn<f32(x: f32)> x / 2.0,
+  main: fn '''
+    var a = 0
+    var b = a
+    takes64(b)
+    let f = 1.5
+    print(half(f))
+    var unused = 7
+    var i = 0
+    while i < 3:
+      takes64(i)
+      i += 1
+  ''',
+})");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(let_type(*r, "a") != nullptr && let_type(*r, "a")->name == "i64");
+    EXPECT(let_type(*r, "b")->name == "i64");
+    EXPECT(let_type(*r, "f")->name == "f32");
+    EXPECT(let_type(*r, "unused")->name == "i32");
+    EXPECT(let_type(*r, "i")->name == "i64");
+}
+
+TEST(sema_literal_variable_conflicting_uses)
+{
+    auto r = check(R"({
+  takes32: fn<(x: i32)> pass,
+  takes64: fn<(x: i64)> pass,
+  main: fn '''
+    var d = 1
+    takes32(d)
+    takes64(d)
+  ''',
+})");
+    EXPECT(r->has_error("expected 'i64', found 'i32'"));
+}
+
+TEST(sema_literal_variable_range_uses_inferred_type)
+{
+    auto r = check("{ main: fn '''\n  var c = 300\n  let small: u8 = 1\n  print(c + small)\n''' }");
+    EXPECT(r->has_error("300 does not fit in 'u8'"));
+}
+
+TEST(sema_float_literal_variable_stays_float)
+{
+    auto r = check("{ takes: fn<(x: i32)> pass, main: fn '''\n  let f = 1.5\n  takes(f)\n''' }");
+    EXPECT(r->has_error("expected 'i32', found 'f64'"));
+}

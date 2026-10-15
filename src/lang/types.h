@@ -21,6 +21,9 @@ struct Type {
     unsigned bits = 0;          // for Int and Float
     bool is_signed = false;     // for Int
     bool is_pointer_sized = false; // isize / usize: width comes from the target
+    // Placeholder used while inferring the type of a variable initialized
+    // with an untyped literal ('var i = 0'). Never survives semantic analysis.
+    bool is_literal_var = false;
 
     bool is_error() const { return kind == TypeKind::Error; }
     bool is_void() const { return kind == TypeKind::Void; }
