@@ -157,6 +157,17 @@ Block CodeParser::parse_body()
     return block;
 }
 
+ExprPtr CodeParser::parse_standalone_expression()
+{
+    ExprPtr expr = parse_expression();
+    while (match(TokenKind::Newline)) {
+    }
+    if (!panic_ && !check(TokenKind::EndOfInput)) {
+        error_at(peek(), "expected end of the value, found " + describe_token(peek()));
+    }
+    return expr;
+}
+
 void CodeParser::parse_statements_until(TokenKind end, Block& block)
 {
     for (;;) {
@@ -522,6 +533,9 @@ ExprPtr CodeParser::parse_primary()
         return std::make_unique<BoolLiteralExpr>(token.location, token.kind == TokenKind::KwTrue);
     case TokenKind::KwNull: return std::make_unique<NullExpr>(advance().location);
     case TokenKind::Identifier:
+        if (peek(1).kind == TokenKind::LBrace) {
+            return parse_struct_literal();
+        }
         advance();
         return std::make_unique<NameExpr>(token.location, token.text);
     case TokenKind::LParen: return parse_parenthesized();
@@ -537,6 +551,34 @@ ExprPtr CodeParser::parse_primary()
     }
     error_at(token, "expected an expression, found " + describe_token(token));
     return std::make_unique<ErrorExpr>(token.location);
+}
+
+// Name '{' [field ':' expression {',' field ':' expression} [',']] '}'
+ExprPtr CodeParser::parse_struct_literal()
+{
+    const Token& name = advance();
+    auto lit = std::make_unique<StructLiteralExpr>(name.location, name.text);
+    advance(); // '{'
+    while (!check(TokenKind::RBrace)) {
+        if (!check(TokenKind::Identifier)) {
+            error_at(peek(), "expected a field name in '" + lit->type_name + " { ... }', found " +
+                                 describe_token(peek()));
+            return lit;
+        }
+        StructLiteralExpr::FieldInit field;
+        field.location = peek().location;
+        field.name = advance().text;
+        if (!expect(TokenKind::Colon, "':' and a value after the field name")) {
+            return lit;
+        }
+        field.value = parse_expression();
+        lit->fields.push_back(std::move(field));
+        if (!match(TokenKind::Comma)) {
+            break;
+        }
+    }
+    expect(TokenKind::RBrace, "'}' to close the struct value");
+    return lit;
 }
 
 ExprPtr CodeParser::parse_int_literal()

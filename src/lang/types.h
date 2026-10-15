@@ -1,6 +1,12 @@
 #pragma once
 
+#include <cstddef>
+#include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
+
+#include "support/source.h"
 
 namespace hana::lang {
 
@@ -12,7 +18,10 @@ enum class TypeKind {
     Str,
     Int,
     Float,
+    Struct,
 };
+
+struct StructInfo;
 
 // Built-in types are unique singletons, so types compare by pointer.
 struct Type {
@@ -24,13 +33,49 @@ struct Type {
     // Placeholder used while inferring the type of a variable initialized
     // with an untyped literal ('var i = 0'). Never survives semantic analysis.
     bool is_literal_var = false;
+    const StructInfo* struct_info = nullptr; // for Struct
 
     bool is_error() const { return kind == TypeKind::Error; }
     bool is_void() const { return kind == TypeKind::Void; }
     bool is_integer() const { return kind == TypeKind::Int; }
     bool is_float() const { return kind == TypeKind::Float; }
     bool is_numeric() const { return is_integer() || is_float(); }
+    bool is_struct() const { return kind == TypeKind::Struct; }
 };
+
+struct FunctionSymbol;
+struct Expr;
+
+struct StructField {
+    std::string name;
+    const Type* type = nullptr;
+    const Expr* default_value = nullptr;
+    SourceLocation location;
+};
+
+// A user-defined struct. Owned by the Program; 'type.name' views 'name'.
+struct StructInfo {
+    std::string name;
+    SourceLocation location;
+    bool is_copy = false;
+    std::vector<StructField> fields;
+    std::unordered_map<std::string, const FunctionSymbol*> methods;
+    Type type{TypeKind::Struct, {}};
+
+    int find_field(std::string_view field_name) const
+    {
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            if (fields[i].name == field_name) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+};
+
+// Copy types are duplicated instead of moved: numbers, bool, char and
+// structs declared 'struct copy'.
+bool is_copy_type(const Type* type);
 
 // Looks up a type by its source name ("i32", "bool", ...). Returns null for
 // unknown names.

@@ -1,0 +1,14 @@
+{
+  P: struct { name: str, hp: i32 = 1, read: fn<i32(self)> self.hp, make: fn<P()> P { name: "p" } },
+  C: struct copy { s: str },
+  A: struct { b: B },
+  B: struct { a: A },
+  main: fn '''
+    let p = P { name: "a", nope: 1 }
+    let q = P { hp: 2, hp: 3 }
+    p.hp = 3
+    let r = P.read()
+    let s = p.make()
+    print(p)
+  ''',
+}

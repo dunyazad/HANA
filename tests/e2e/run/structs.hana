@@ -1,0 +1,79 @@
+// Structs: fields, defaults, methods with each self convention, static
+// functions, nested fields, struct parameters and results.
+{
+  Player: struct {
+    name: str,
+    hp: i32 = 100,
+    level: i32 = 1,
+
+    alive: fn<bool(self)> self.hp > 0,
+    damage: fn<(inout self, amount: i32)> self.hp -= amount,
+    retire: fn<str(sink self)> self.name,
+    new: fn<Player(sink name: str)> Player { name: name },
+  },
+
+  Vec: struct copy {
+    x: f32,
+    y: f32,
+
+    len2: fn<f32(self)> self.x * self.x + self.y * self.y,
+    scaled: fn<Vec(self, k: f32)> Vec { x: self.x * k, y: self.y * k },
+    zero: fn<Vec()> Vec { x: 0.0, y: 0.0 },
+  },
+
+  Body: struct {
+    pos: Vec,
+    vel: Vec = Vec.zero(),
+
+    step: fn<(inout self)> '''
+      self.pos.x += self.vel.x
+      self.pos.y += self.vel.y
+    ''',
+  },
+
+  // Fields may name structs declared later in the file.
+  Pair: struct { first: Cell, second: Cell },
+  Cell: struct copy { value: i64 },
+
+  nudge: fn<(inout v: Vec)> v.x += 1.0,
+  sum: fn<i64(p: Pair)> p.first.value + p.second.value,
+  swap: fn<Pair(sink p: Pair)> Pair { first: p.second, second: p.first },
+  bigger: fn<Vec(a: Vec, b: Vec)> a if a.len2() >= b.len2() else b,
+
+  main: fn '''
+    var p = Player.new("Ari")
+    print(f"{p.name} {p.hp} {p.level}")
+    p.damage(30)
+    p.damage(20)
+    print(f"{p.hp} {p.alive()}")
+    p.hp = 0
+    print(p.alive())
+
+    let v = Vec { x: 3.0, y: 4.0 }
+    let w = v.scaled(2.0)
+    print(f"{v.len2()} {w.x} {w.y} {v.x}")
+    print(Vec { y: 2.0, x: 1.0 }.y)
+    print(bigger(v, w).x)
+
+    var b = Body { pos: v }
+    b.vel = Vec { x: 1.0, y: -1.0 }
+    var i = 0
+    while i < 3:
+      b.step()
+      i += 1
+    print(f"{b.pos.x} {b.pos.y}")
+    nudge(&b.pos)
+    print(b.pos.x)
+
+    let pair = Pair { first: Cell { value: 1 }, second: Cell { value: 41 } }
+    print(sum(pair))
+    let swapped = swap(pair)
+    print(f"{swapped.first.value} {swapped.second.value}")
+    print(sum(Pair { first: Cell { value: 2 }, second: Cell { value: 3 } }))
+
+    var q = Player { name: "Bo", level: 7 }
+    q = Player { name: "Cy", hp: 5 }
+    print(f"{q.name} {q.hp} {q.level}")
+    print(q.retire())
+  ''',
+}

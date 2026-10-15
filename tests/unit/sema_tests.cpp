@@ -212,3 +212,144 @@ TEST(sema_float_literal_variable_stays_float)
     auto r = check("{ takes: fn<(x: i32)> pass, main: fn '''\n  let f = 1.5\n  takes(f)\n''' }");
     EXPECT(r->has_error("expected 'i32', found 'f64'"));
 }
+
+TEST(sema_struct_program)
+{
+    auto r = check(R"({
+  P: struct {
+    x: i32,
+    y: i32 = 2,
+    sum: fn<i32(self)> self.x + self.y,
+    move: fn<(inout self, d: i32)> self.x += d,
+    at: fn<P(x: i32)> P { x: x },
+  },
+  main: fn '''
+    var p = P.at(1)
+    p.move(2)
+    p.y = 5
+    print(p.sum())
+  ''',
+})");
+    EXPECT(!r->diagnostics.has_errors());
+}
+
+TEST(sema_struct_literal_fields)
+{
+    auto r = check("{ P: struct { a: i32, b: i32 = 1 }, f: fn '''\n  let p = P { b: 2, c: 3 }\n''' }");
+    EXPECT(r->has_error("'P' has no field 'c'"));
+    EXPECT(r->has_error("missing field 'a'"));
+}
+
+TEST(sema_struct_cannot_contain_itself)
+{
+    EXPECT(check("{ A: struct { a: A } }")->has_error("contains itself"));
+}
+
+TEST(sema_copy_struct_needs_copy_fields)
+{
+    EXPECT(check("{ A: struct copy { s: str } }")->has_error("is not Copy"));
+    EXPECT(!check("{ A: struct copy { v: B }, B: struct copy { x: f32 } }")->diagnostics.has_errors());
+}
+
+TEST(sema_inout_receiver_needs_mutable_place)
+{
+    const char* decl = "P: struct { x: i32, m: fn<(inout self)> pass, at: fn<P()> P { x: 0 } }";
+    EXPECT(check(std::string("{ ") + decl + ", f: fn '''\n  let p = P.at()\n  p.m()\n''' }")
+               ->has_error("is not mutable"));
+    EXPECT(check(std::string("{ ") + decl + ", f: fn P.at().m() }")
+               ->has_error("must be called on a variable"));
+}
+
+TEST(sema_field_inout_exclusivity)
+{
+    const char* head = "{ P: struct { x: i32, y: i32 }, two: fn<(inout a: i32, inout b: i32)> pass, "
+                       "whole: fn<(inout p: P, inout b: i32)> pass, f: fn '''\n  var p = P { x: 1, y: 2 }\n";
+    EXPECT(!check(std::string(head) + "  two(&p.x, &p.y)\n''' }")->diagnostics.has_errors());
+    EXPECT(check(std::string(head) + "  whole(&p, &p.x)\n''' }")->has_error("more than once"));
+}
+
+TEST(sema_use_after_move)
+{
+    auto r = check(R"({
+  P: struct { s: str },
+  eat: fn<(sink p: P)> pass,
+  f: fn '''
+    let p = P { s: "a" }
+    eat(p)
+    eat(p)
+  ''',
+})");
+    EXPECT(r->error_count() == 1);
+    EXPECT(r->has_error("use of moved value 'p'"));
+}
+
+TEST(sema_moves_follow_control_flow)
+{
+    // Moved on one branch only, then reassigned: no error.
+    auto ok = check(R"({
+  P: struct { s: str },
+  eat: fn<(sink p: P)> pass,
+  f: fn<(c: bool)> '''
+    var p = P { s: "a" }
+    if c:
+      eat(p)
+      p = P { s: "b" }
+    eat(p)
+    var i = 0
+    while i < 2:
+      let q = P { s: "c" }
+      eat(q)
+      i += 1
+  ''',
+})");
+    EXPECT(!ok->diagnostics.has_errors());
+    auto bad = check(R"({
+  P: struct { s: str },
+  eat: fn<(sink p: P)> pass,
+  f: fn<(c: bool)> '''
+    let p = P { s: "a" }
+    if c:
+      eat(p)
+    eat(p)
+  ''',
+})");
+    EXPECT(bad->has_error("use of moved value 'p'"));
+}
+
+TEST(sema_copy_values_do_not_move)
+{
+    auto r = check(R"({
+  V: struct copy { x: f32 },
+  eat: fn<(sink v: V)> pass,
+  f: fn '''
+    let v = V { x: 1.0 }
+    eat(v)
+    eat(v)
+    let n = 1
+    let m = n
+    print(n)
+  ''',
+})");
+    EXPECT(!r->diagnostics.has_errors());
+}
+
+TEST(sema_moving_a_field_moves_the_variable)
+{
+    auto r = check(R"({
+  P: struct { s: str, n: i32 },
+  f: fn '''
+    let p = P { s: "a", n: 1 }
+    let s = p.s
+    print(p.n)
+  ''',
+})");
+    EXPECT(r->has_error("use of moved value 'p'"));
+}
+
+TEST(sema_cannot_move_out_of_read_or_inout_params)
+{
+    EXPECT(check("{ P: struct { s: str }, f: fn<P(p: P)> p }")->has_error("read-only parameter"));
+    EXPECT(check("{ P: struct { s: str }, f: fn<(inout p: P)> '''\n  let q = p\n''' }")
+               ->has_error("inout parameter"));
+    EXPECT(!check("{ P: struct { s: str }, f: fn<P(sink p: P)> p }")->diagnostics.has_errors());
+}

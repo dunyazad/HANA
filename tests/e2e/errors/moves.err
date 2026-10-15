@@ -1,0 +1,6 @@
+moves.hana:8:24: error: cannot move 'p' because it is a read-only parameter; declare it 'sink' to take ownership
+moves.hana:12:5: error: use of moved value 'p'
+moves.hana:11:9: note: 'p' was moved here
+moves.hana:16:11: error: use of moved value 'q'
+moves.hana:16:11: note: 'q' was moved here in the previous iteration of the loop
+moves.hana:5:25: error: cannot move 'self.name' out of a method that only reads 'self'; declare the method with 'sink self' to take ownership

@@ -14,6 +14,7 @@ namespace hana::lang {
 struct Type;
 struct VarSymbol;
 struct FunctionSymbol;
+struct StructDecl;
 
 // ---------------------------------------------------------------------------
 // Types as written in source
@@ -40,6 +41,7 @@ enum class ExprKind {
     Conditional,
     Cast,
     Call,
+    StructLiteral,
     Member,
     Index,
     Try,
@@ -233,6 +235,26 @@ struct CallExpr final : Expr {
     std::vector<ExprPtr> args;
 };
 
+// 'Point { x: 1.0, y: 2.0 }'
+struct StructLiteralExpr final : Expr {
+    StructLiteralExpr(SourceLocation location_value, std::string type_name_value)
+        : Expr(ExprKind::StructLiteral, location_value)
+        , type_name(std::move(type_name_value))
+    {
+    }
+    struct FieldInit {
+        std::string name;
+        SourceLocation location;
+        ExprPtr value;
+    };
+    std::string type_name;
+    std::vector<FieldInit> fields;
+    // Set by semantic analysis: for each struct field in declaration order,
+    // the index into 'fields', or -1 when the field's default is used.
+    std::vector<int> field_order;
+};
+
+// 'object.member': a field, or the callee of a method call.
 struct MemberExpr final : Expr {
     MemberExpr(SourceLocation location_value, ExprPtr object_value, std::string member_value)
         : Expr(ExprKind::Member, location_value)
@@ -242,6 +264,10 @@ struct MemberExpr final : Expr {
     }
     ExprPtr object;
     std::string member;
+    // Set by semantic analysis.
+    int field_index = -1;                     // a field access
+    const FunctionSymbol* method = nullptr;   // the callee of a method call
+    bool is_static_call = false;              // 'Type.function(...)', no receiver
 };
 
 struct IndexExpr final : Expr {
@@ -391,13 +417,38 @@ struct FnDecl {
     std::string name;
     SourceLocation location;
     bool is_pub = false;
+    // Methods: the struct that owns the function and, when it takes 'self',
+    // how 'self' is passed. 'self' is not part of 'params'.
+    StructDecl* owner = nullptr;
+    std::optional<ParamConvention> self_convention;
+    SourceLocation self_location;
     std::vector<Param> params;
     std::optional<TypeExpr> return_type;
     Block body;
     const FunctionSymbol* symbol = nullptr;
+    const VarSymbol* self_symbol = nullptr;
+};
+
+struct FieldDecl {
+    std::string name;
+    SourceLocation location;
+    TypeExpr type;
+    ExprPtr default_value; // 'hp: i32 = 100', or null
+};
+
+// 'Point: struct { x: f32, y: f32, length: fn<f32(self)> ... }'
+struct StructDecl {
+    std::string name;
+    SourceLocation location;
+    bool is_pub = false;
+    bool is_copy = false; // 'struct copy { ... }'
+    std::vector<FieldDecl> fields;
+    std::vector<std::unique_ptr<FnDecl>> methods;
+    const Type* type = nullptr;
 };
 
 struct Module {
+    std::vector<std::unique_ptr<StructDecl>> structs;
     std::vector<std::unique_ptr<FnDecl>> functions;
 };
 

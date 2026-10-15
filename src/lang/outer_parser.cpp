@@ -135,15 +135,29 @@ bool OuterParser::parse_entry(Module& module)
         return !failed_;
     }
     if (looking_at_word("fn")) {
-        auto function = parse_function(*key, key_location, is_pub);
+        auto function = parse_function(*key, key_location, is_pub, nullptr);
         if (function) {
             module.functions.push_back(std::move(function));
             return true;
         }
         return false;
     }
-    error(key_location, "'" + *key + "': only functions and 'use' are supported at the top level "
-                                     "for now");
+    if (looking_at_word("struct")) {
+        auto decl = parse_struct(*key, key_location, is_pub);
+        if (decl) {
+            module.structs.push_back(std::move(decl));
+            return true;
+        }
+        return false;
+    }
+    for (const char* word : {"enum", "trait", "extend"}) {
+        if (looking_at_word(word)) {
+            error(location_, std::string("'") + word + "' is not supported yet");
+            return false;
+        }
+    }
+    error(key_location, "'" + *key + "': only functions, structs and 'use' are supported at the "
+                                     "top level for now");
     return false;
 }
 
@@ -191,16 +205,152 @@ void OuterParser::parse_use(const SourceLocation& location)
 }
 
 // ---------------------------------------------------------------------------
+// Structs
+
+// 'struct' ['copy'] '{' members '}' where a member is a field
+// 'name: Type [= default]' or a method 'name: fn...'.
+std::unique_ptr<StructDecl> OuterParser::parse_struct(std::string name,
+                                                      const SourceLocation& location, bool is_pub)
+{
+    advance_by(6); // 'struct'
+    auto decl = std::make_unique<StructDecl>();
+    decl->name = std::move(name);
+    decl->location = location;
+    decl->is_pub = is_pub;
+    skip_trivia();
+    if (looking_at_word("copy")) {
+        decl->is_copy = true;
+        advance_by(4);
+        skip_trivia();
+    }
+    if (peek() == '<') {
+        error(location_, "generic structs are not supported yet");
+        return nullptr;
+    }
+    if (!expect_char('{', "'{' and the members of the struct")) {
+        return nullptr;
+    }
+    for (;;) {
+        skip_trivia();
+        if (peek() == '}') {
+            advance();
+            return decl;
+        }
+        if (at_end()) {
+            error(location_, "expected '}' to close the struct '" + decl->name + "'");
+            return nullptr;
+        }
+        if (!parse_struct_member(*decl) || failed_) {
+            skip_rest_of_object();
+            return nullptr;
+        }
+        skip_trivia();
+        if (peek() == ',') {
+            advance();
+        } else if (peek() != '}') {
+            error(location_, "expected ',' between struct members, found " + describe_here());
+            skip_rest_of_object();
+            return nullptr;
+        }
+    }
+}
+
+// After an error inside an object, skips past its closing '}' so the
+// remaining members are not read as entries of the enclosing object.
+void OuterParser::skip_rest_of_object()
+{
+    while (!at_end()) {
+        skip_value();
+        if (peek() == '}') {
+            advance();
+            return;
+        }
+        advance(); // ','
+    }
+}
+
+bool OuterParser::parse_struct_member(StructDecl& decl)
+{
+    SourceLocation key_location;
+    const bool quoted = peek() == '"';
+    std::optional<std::string> key = parse_key(key_location);
+    if (!key) {
+        return false;
+    }
+    if (quoted && (key->empty() || !is_identifier_start((*key)[0]))) {
+        error(key_location, "operator overloading ('" + *key + "') is not supported yet");
+        return false;
+    }
+    skip_trivia();
+    if (!expect_char(':', "':' after the member name")) {
+        return false;
+    }
+    skip_trivia();
+    if (!looking_at_word("fn")) {
+        return parse_field(decl, std::move(*key), key_location);
+    }
+    auto method = parse_function(std::move(*key), key_location, false, &decl);
+    if (!method) {
+        return false;
+    }
+    decl.methods.push_back(std::move(method));
+    return true;
+}
+
+bool OuterParser::parse_field(StructDecl& decl, std::string name, const SourceLocation& location)
+{
+    FieldDecl field;
+    field.name = std::move(name);
+    field.location = location;
+    std::optional<TypeExpr> type = parse_type();
+    if (!type) {
+        return false;
+    }
+    field.type = std::move(*type);
+    skip_spaces_on_line();
+    if (peek() == '=') {
+        advance();
+        skip_spaces_on_line();
+        field.default_value = parse_field_default();
+        if (!field.default_value) {
+            return false;
+        }
+    }
+    decl.fields.push_back(std::move(field));
+    return true;
+}
+
+// The default value is a one-line expression ending like a one-line body.
+ExprPtr OuterParser::parse_field_default()
+{
+    if (at_end() || peek() == ',' || peek() == '}' || peek() == '\n' || peek() == '\r' ||
+        looking_at("//") || looking_at("/*")) {
+        error(location_, "expected a default value after '='");
+        return nullptr;
+    }
+    std::optional<CodeRegion> region = parse_inline_code();
+    if (!region) {
+        return nullptr;
+    }
+    CodeLexer lexer(source_, *region, diagnostics_);
+    const std::vector<Token> tokens = lexer.tokenize();
+    CodeParser parser(tokens, diagnostics_);
+    return parser.parse_standalone_expression();
+}
+
+// ---------------------------------------------------------------------------
 // Functions
 
 std::unique_ptr<FnDecl> OuterParser::parse_function(std::string name,
-                                                    const SourceLocation& location, bool is_pub)
+                                                    const SourceLocation& location, bool is_pub,
+                                                    StructDecl* owner)
 {
     advance_by(2); // 'fn'
     auto function = std::make_unique<FnDecl>();
     function->name = std::move(name);
     function->location = location;
     function->is_pub = is_pub;
+    function->owner = owner;
 
     Signature signature;
     std::optional<CodeRegion> body;
@@ -220,6 +370,12 @@ std::unique_ptr<FnDecl> OuterParser::parse_function(std::string name,
     if (!body) {
         return nullptr;
     }
+    if (signature.self_convention && owner == nullptr) {
+        error(signature.self_location, "'self' can only be used by a method inside a struct");
+        return nullptr;
+    }
+    function->self_convention = signature.self_convention;
+    function->self_location = signature.self_location;
     function->params = std::move(signature.params);
     function->return_type = std::move(signature.return_type);
     function->body = parse_code(*body, function->return_type.has_value() && !body->multiline);
@@ -237,7 +393,7 @@ bool OuterParser::parse_short_signature(Signature& signature)
             error(location_, "several return values (tuples) are not supported yet");
             return false;
         }
-        if (!parse_param_group(signature.params)) {
+        if (!parse_param_group(signature)) {
             return false;
         }
     } else {
@@ -254,7 +410,7 @@ bool OuterParser::parse_short_signature(Signature& signature)
                                  describe_here());
             return false;
         }
-        if (!parse_param_group(signature.params)) {
+        if (!parse_param_group(signature)) {
             return false;
         }
     }
@@ -294,11 +450,9 @@ bool OuterParser::parse_object_signature(Signature& signature, std::optional<Cod
                     advance();
                     break;
                 }
-                Param param;
-                if (!parse_param(param)) {
+                if (!parse_signature_param(signature)) {
                     return false;
                 }
-                signature.params.push_back(std::move(param));
                 skip_trivia();
                 if (peek() == ',') {
                     advance();
@@ -333,7 +487,7 @@ bool OuterParser::parse_object_signature(Signature& signature, std::optional<Cod
     return true;
 }
 
-bool OuterParser::parse_param_group(std::vector<Param>& params)
+bool OuterParser::parse_param_group(Signature& signature)
 {
     advance(); // '('
     skip_trivia();
@@ -342,11 +496,9 @@ bool OuterParser::parse_param_group(std::vector<Param>& params)
         return true;
     }
     for (;;) {
-        Param param;
-        if (!parse_param(param)) {
+        if (!parse_signature_param(signature)) {
             return false;
         }
-        params.push_back(std::move(param));
         skip_trivia();
         if (peek() == ',') {
             advance();
@@ -361,7 +513,30 @@ bool OuterParser::parse_param_group(std::vector<Param>& params)
     }
 }
 
-bool OuterParser::parse_param(Param& param)
+// Adds one parameter to the signature. 'self' is kept apart from the other
+// parameters and must come first.
+bool OuterParser::parse_signature_param(Signature& signature)
+{
+    Param param;
+    bool is_self = false;
+    if (!parse_param(param, is_self)) {
+        return false;
+    }
+    if (!is_self) {
+        signature.params.push_back(std::move(param));
+        return true;
+    }
+    if (signature.self_convention || !signature.params.empty()) {
+        error(param.location, "'self' must be the first parameter");
+        return false;
+    }
+    signature.self_convention = param.convention;
+    signature.self_location = param.location;
+    return true;
+}
+
+// [inout | sink] name ':' type, or [inout | sink] 'self' without a type.
+bool OuterParser::parse_param(Param& param, bool& is_self)
 {
     if (looking_at_word("inout")) {
         param.convention = ParamConvention::Inout;
@@ -380,6 +555,14 @@ bool OuterParser::parse_param(Param& param)
     }
     param.name = std::move(*name);
     skip_trivia();
+    if (param.name == "self") {
+        if (peek() == ':') {
+            error(location_, "'self' has no type; it is always the struct the method belongs to");
+            return false;
+        }
+        is_self = true;
+        return true;
+    }
     if (!expect_char(':', "':' and a type after the parameter name")) {
         return false;
     }

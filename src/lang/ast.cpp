@@ -75,6 +75,9 @@ class AstDumper {
 public:
     std::string dump(const Module& module)
     {
+        for (const auto& decl : module.structs) {
+            dump_struct(*decl);
+        }
         for (const auto& function : module.functions) {
             dump_function(*function);
         }
@@ -103,6 +106,23 @@ private:
         --depth_;
     }
 
+    void dump_struct(const StructDecl& decl)
+    {
+        line(std::string(decl.is_pub ? "pub " : "") + (decl.is_copy ? "struct copy " : "struct ") +
+             decl.name);
+        ++depth_;
+        for (const FieldDecl& field : decl.fields) {
+            line("field " + field.name + ": " + field.type.name);
+            if (field.default_value) {
+                child(*field.default_value);
+            }
+        }
+        for (const auto& method : decl.methods) {
+            dump_function(*method);
+        }
+        --depth_;
+    }
+
     void dump_function(const FnDecl& function)
     {
         std::string header = std::string(function.is_pub ? "pub " : "") + "fn " + function.name;
@@ -111,6 +131,9 @@ private:
         }
         line(header);
         ++depth_;
+        if (function.self_convention) {
+            line(std::string("self ") + param_convention_spelling(*function.self_convention));
+        }
         for (const Param& param : function.params) {
             line(std::string("param ") + param_convention_spelling(param.convention) + " " +
                  param.name + ": " + param.type.name);
@@ -247,6 +270,17 @@ private:
             for (const auto& arg : call.args) {
                 child(*arg);
             }
+            break;
+        }
+        case ExprKind::StructLiteral: {
+            const auto& lit = static_cast<const StructLiteralExpr&>(expr);
+            line("struct literal " + lit.type_name);
+            ++depth_;
+            for (const auto& field : lit.fields) {
+                line("field " + field.name);
+                child(*field.value);
+            }
+            --depth_;
             break;
         }
         case ExprKind::Member: {

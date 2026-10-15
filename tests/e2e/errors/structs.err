@@ -1,0 +1,11 @@
+structs.hana:3:20: error: 'C' is declared 'struct copy', but field 's' of type 'str' is not Copy
+structs.hana:4:15: error: struct 'A' contains itself through field 'b'; a struct cannot hold itself by value
+structs.hana:5:15: error: struct 'B' contains itself through field 'a'; a struct cannot hold itself by value
+structs.hana:7:28: error: 'P' has no field 'nope'
+structs.hana:8:24: error: field 'hp' is given more than once
+structs.hana:8:13: error: missing field 'name' in 'P { ... }'
+structs.hana:9:5: error: cannot assign to 'p.hp' because 'p' is declared with 'let'; use 'var' to make it mutable
+structs.hana:7:9: note: 'p' is declared here
+structs.hana:10:14: error: 'P.read' takes 'self'; call it on a value, as in 'value.read()'
+structs.hana:11:14: error: 'P.make' does not take 'self'; call it as 'P.make(...)'
+structs.hana:12:11: error: a value of type 'P' cannot be printed yet; print its fields

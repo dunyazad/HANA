@@ -124,3 +124,21 @@ TEST(code_parser_else_without_if)
     auto r = parse_main("    else: pass\n");
     EXPECT(r->has_error("without a matching 'if'"));
 }
+
+TEST(code_parser_struct_literal)
+{
+    auto r = parse_main("    let p = Point { x: 1, y: 2, }\n    let e = Empty {}\n");
+    EXPECT(!r->diagnostics.has_errors());
+    const auto& lit = static_cast<const StructLiteralExpr&>(first_let_init(*r));
+    EXPECT(lit.kind == ExprKind::StructLiteral);
+    EXPECT(lit.type_name == "Point");
+    EXPECT(lit.fields.size() == 2);
+    EXPECT(lit.fields[1].name == "y");
+}
+
+TEST(code_parser_struct_literal_spans_lines)
+{
+    auto r = parse_main("    let p = Point {\n      x: 1,\n      y: 2,\n    }\n    pass\n");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(main_body(*r).statements.size() == 2);
+}

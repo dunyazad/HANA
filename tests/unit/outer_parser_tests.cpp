@@ -98,11 +98,12 @@ TEST(outer_unsupported_entries_and_recovery)
 {
     auto r = parse(R"({
   max_hp: 100,
-  Point: struct { x: f32 },
+  Shape: enum { Circle: { r: f32 } },
   ok: fn pass,
 })");
     EXPECT(r->error_count() == 2);
     EXPECT(r->has_error("'max_hp': only functions"));
+    EXPECT(r->has_error("'enum' is not supported yet"));
     EXPECT(r->module->functions.size() == 1);
 }
 
@@ -132,4 +133,47 @@ TEST(outer_standard_json_keys_and_strings)
     auto r = parse(R"({ "use": [], "na\u006De": fn pass })");
     EXPECT(!r->diagnostics.has_errors());
     EXPECT(r->module->functions.front()->name == "name");
+}
+
+TEST(outer_struct_fields_methods_and_self)
+{
+    auto r = parse(R"({
+  Player: struct {
+    name: str,
+    hp: i32 = 100,
+    alive: fn<bool(self)> self.hp > 0,
+    damage: fn<(inout self, amount: i32)> self.hp -= amount,
+    new: fn<Player(sink name: str)> Player { name: name },
+  },
+  V: struct copy { x: f32 },
+})");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(r->module->structs.size() == 2);
+    const StructDecl& player = *r->module->structs[0];
+    EXPECT(player.fields.size() == 2);
+    EXPECT(player.fields[1].default_value != nullptr);
+    EXPECT(player.methods.size() == 3);
+    EXPECT(player.methods[0]->self_convention == ParamConvention::Read);
+    EXPECT(player.methods[1]->self_convention == ParamConvention::Inout);
+    EXPECT(player.methods[1]->params.size() == 1);
+    EXPECT(!player.methods[2]->self_convention.has_value());
+    EXPECT(player.methods[2]->owner == &player);
+    EXPECT(r->module->structs[1]->is_copy);
+}
+
+TEST(outer_self_rules)
+{
+    EXPECT(parse("{ f: fn<(self)> pass }")->has_error("only be used by a method"));
+    EXPECT(parse("{ S: struct { g: fn<(x: i32, self)> pass } }")->has_error("must be the first"));
+    EXPECT(parse("{ S: struct { g: fn<(self: S)> pass } }")->has_error("'self' has no type"));
+}
+
+TEST(outer_struct_error_skips_the_whole_struct)
+{
+    auto r = parse(R"({
+  S: struct { a: , b: i32, c: fn pass },
+  ok: fn pass,
+})");
+    EXPECT(r->error_count() == 1);
+    EXPECT(r->module->functions.size() == 1);
 }

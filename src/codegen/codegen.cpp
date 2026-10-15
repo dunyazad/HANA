@@ -26,6 +26,8 @@
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/TargetParser/Host.h>
 
+#include "lang/sema.h"
+
 namespace hana::codegen {
 
 using namespace hana::lang;
@@ -37,6 +39,14 @@ namespace {
 std::string mangle_function_name(const std::string& name)
 {
     return "hana." + name;
+}
+
+// Read parameters of struct type are passed by pointer, so the value is not
+// copied; inout parameters always are. Everything else is passed by value.
+bool passed_by_pointer(ParamConvention convention, const Type* type)
+{
+    return convention == ParamConvention::Inout ||
+           (convention == ParamConvention::Read && type->is_struct());
 }
 
 struct LoopTargets {
@@ -65,8 +75,18 @@ public:
         for (const auto& function : ast.functions) {
             declare_function(*function);
         }
+        for (const auto& decl : ast.structs) {
+            for (const auto& method : decl->methods) {
+                declare_function(*method);
+            }
+        }
         for (const auto& function : ast.functions) {
             emit_function(*function);
+        }
+        for (const auto& decl : ast.structs) {
+            for (const auto& method : decl->methods) {
+                emit_function(*method);
+            }
         }
         if (program_.main != nullptr) {
             emit_c_main();
@@ -92,19 +112,44 @@ private:
         case TypeKind::Float:
             return type->bits == 32 ? llvm::Type::getFloatTy(context_)
                                     : llvm::Type::getDoubleTy(context_);
+        case TypeKind::Struct: return struct_type(*type->struct_info);
         case TypeKind::Error: break;
         }
         return llvm::Type::getVoidTy(context_);
     }
 
+    // Structs cannot contain themselves (checked by semantic analysis), so
+    // the field types are complete when the body is set.
+    llvm::StructType* struct_type(const StructInfo& info)
+    {
+        if (auto it = struct_types_.find(&info); it != struct_types_.end()) {
+            return it->second;
+        }
+        std::vector<llvm::Type*> fields;
+        for (const StructField& field : info.fields) {
+            fields.push_back(llvm_type(field.type));
+        }
+        llvm::StructType* type = llvm::StructType::create(context_, fields, info.name);
+        struct_types_[&info] = type;
+        return type;
+    }
+
+    llvm::Type* param_llvm_type(ParamConvention convention, const Type* type)
+    {
+        return passed_by_pointer(convention, type) ? llvm::PointerType::get(context_, 0)
+                                                   : llvm_type(type);
+    }
+
+    // A method takes 'self' as its first LLVM parameter.
     void declare_function(const FnDecl& decl)
     {
         const FunctionSymbol& symbol = *decl.symbol;
         std::vector<llvm::Type*> params;
+        if (symbol.self_convention) {
+            params.push_back(param_llvm_type(*symbol.self_convention, decl.owner->type));
+        }
         for (std::size_t i = 0; i < symbol.param_types.size(); ++i) {
-            params.push_back(symbol.conventions[i] == ParamConvention::Inout
-                                 ? llvm::PointerType::get(context_, 0)
-                                 : llvm_type(symbol.param_types[i]));
+            params.push_back(param_llvm_type(symbol.conventions[i], symbol.param_types[i]));
         }
         auto* type = llvm::FunctionType::get(llvm_type(symbol.return_type), params, false);
         functions_[&symbol] = llvm::Function::Create(type, llvm::Function::ExternalLinkage,
@@ -128,18 +173,28 @@ private:
 
     void bind_parameters(const FnDecl& decl, llvm::Function& function)
     {
-        for (std::size_t i = 0; i < decl.params.size(); ++i) {
-            const Param& param = decl.params[i];
-            llvm::Argument* arg = function.getArg(static_cast<unsigned>(i));
-            arg->setName(param.name);
-            if (param.convention == ParamConvention::Inout) {
-                addresses_[param.symbol] = arg;
-                continue;
-            }
-            llvm::AllocaInst* slot = create_entry_alloca(param.symbol->type, param.name);
-            builder_.CreateStore(arg, slot);
-            addresses_[param.symbol] = slot;
+        unsigned index = 0;
+        if (decl.self_convention) {
+            bind_parameter(*decl.self_convention, decl.self_symbol, "self", *function.getArg(index));
+            ++index;
         }
+        for (const Param& param : decl.params) {
+            bind_parameter(param.convention, param.symbol, param.name, *function.getArg(index));
+            ++index;
+        }
+    }
+
+    void bind_parameter(ParamConvention convention, const VarSymbol* symbol, const std::string& name,
+                        llvm::Argument& arg)
+    {
+        arg.setName(name);
+        if (passed_by_pointer(convention, symbol->type)) {
+            addresses_[symbol] = &arg;
+            return;
+        }
+        llvm::AllocaInst* slot = create_entry_alloca(symbol->type, name);
+        builder_.CreateStore(&arg, slot);
+        addresses_[symbol] = slot;
     }
 
     // Blocks left open are unreachable or the end of a void function.
@@ -224,12 +279,11 @@ private:
 
     void emit_assign(const AssignStmt& assign)
     {
-        const auto& target = static_cast<const NameExpr&>(*assign.target);
-        llvm::Value* address = addresses_.at(target.var);
-        const Type* type = target.var->type;
+        llvm::Value* address = emit_address(*assign.target);
+        const Type* type = assign.target->type;
         llvm::Value* value = emit_expr(*assign.value);
         if (assign.op) {
-            llvm::Value* current = builder_.CreateLoad(llvm_type(type), address, target.name);
+            llvm::Value* current = builder_.CreateLoad(llvm_type(type), address);
             value = emit_arithmetic(*assign.op, type, current, value, assign.op_location);
         }
         builder_.CreateStore(value, address);
@@ -321,13 +375,92 @@ private:
             return emit_conditional(static_cast<const ConditionalExpr&>(expr));
         case ExprKind::Cast: return emit_cast(static_cast<const CastExpr&>(expr));
         case ExprKind::Call: return emit_call(static_cast<const CallExpr&>(expr));
+        case ExprKind::StructLiteral:
+            return emit_struct_literal(static_cast<const StructLiteralExpr&>(expr));
+        case ExprKind::Member: return emit_member(static_cast<const MemberExpr&>(expr));
         case ExprKind::Null:
         case ExprKind::Error:
-        case ExprKind::Member:
         case ExprKind::Index:
         case ExprKind::Try: break; // rejected by semantic analysis
         }
         return llvm::UndefValue::get(llvm_type(expr.type));
+    }
+
+    // The address of a place: a variable or a field path of one.
+    llvm::Value* emit_address(const Expr& place)
+    {
+        if (place.kind == ExprKind::Name) {
+            return addresses_.at(static_cast<const NameExpr&>(place).var);
+        }
+        const auto& member = static_cast<const MemberExpr&>(place);
+        return builder_.CreateStructGEP(llvm_type(member.object->type), emit_address(*member.object),
+                                        static_cast<unsigned>(member.field_index), member.member);
+    }
+
+    // A field of a place is loaded through its address; a field of a
+    // temporary value is extracted from it.
+    llvm::Value* emit_member(const MemberExpr& member)
+    {
+        if (place_of(member)) {
+            return builder_.CreateLoad(llvm_type(member.type), emit_address(member), member.member);
+        }
+        return builder_.CreateExtractValue(emit_expr(*member.object),
+                                           static_cast<unsigned>(member.field_index));
+    }
+
+    // Written fields run in source order, then the defaults of the fields
+    // left out, in declaration order.
+    llvm::Value* emit_struct_literal(const StructLiteralExpr& lit)
+    {
+        const StructInfo& info = *lit.type->struct_info;
+        std::vector<llvm::Value*> written;
+        for (const auto& field : lit.fields) {
+            written.push_back(emit_expr(*field.value));
+        }
+        llvm::Value* value = llvm::PoisonValue::get(llvm_type(lit.type));
+        for (std::size_t i = 0; i < info.fields.size(); ++i) {
+            const int index = lit.field_order[i];
+            llvm::Value* field = index >= 0 ? written[static_cast<std::size_t>(index)]
+                                            : emit_expr(*info.fields[i].default_value);
+            value = builder_.CreateInsertValue(value, field, static_cast<unsigned>(i));
+        }
+        return value;
+    }
+
+    // An argument passed by pointer: a place passes its own address, any
+    // other value is stored in a temporary first.
+    llvm::Value* emit_pointer_argument(const Expr& arg)
+    {
+        if (place_of(arg)) {
+            return emit_address(arg);
+        }
+        llvm::AllocaInst* temp = create_entry_alloca(arg.type, "arg");
+        builder_.CreateStore(emit_expr(arg), temp);
+        return temp;
+    }
+
+    llvm::Value* emit_argument(ParamConvention convention, const Expr& arg)
+    {
+        if (convention == ParamConvention::Inout) {
+            return emit_address(*static_cast<const UnaryExpr&>(arg).operand);
+        }
+        if (passed_by_pointer(convention, arg.type)) {
+            return emit_pointer_argument(arg);
+        }
+        return emit_expr(arg);
+    }
+
+    // The value a method is called on; for 'inout self' it is a place
+    // written without '&'.
+    llvm::Value* emit_receiver(ParamConvention convention, const Expr& object)
+    {
+        if (convention == ParamConvention::Inout) {
+            return emit_address(object);
+        }
+        if (passed_by_pointer(convention, object.type)) {
+            return emit_pointer_argument(object);
+        }
+        return emit_expr(object);
     }
 
     llvm::Value* emit_int_literal(const IntLiteralExpr& lit)
@@ -594,23 +727,25 @@ private:
 
     llvm::Value* emit_call(const CallExpr& call)
     {
-        const auto& callee = static_cast<const NameExpr&>(*call.callee);
-        const FunctionSymbol& symbol = *callee.function;
-        if (symbol.intrinsic != Intrinsic::None) {
-            emit_print(*call.args.front(), symbol.intrinsic == Intrinsic::Print);
-            return nullptr;
-        }
         std::vector<llvm::Value*> args;
-        for (std::size_t i = 0; i < call.args.size(); ++i) {
-            if (symbol.conventions[i] == ParamConvention::Inout) {
-                const auto& mark = static_cast<const UnaryExpr&>(*call.args[i]);
-                const auto& name = static_cast<const NameExpr&>(*mark.operand);
-                args.push_back(addresses_.at(name.var));
-            } else {
-                args.push_back(emit_expr(*call.args[i]));
+        const FunctionSymbol* symbol = nullptr;
+        if (call.callee->kind == ExprKind::Member) {
+            const auto& callee = static_cast<const MemberExpr&>(*call.callee);
+            symbol = callee.method;
+            if (!callee.is_static_call) {
+                args.push_back(emit_receiver(*symbol->self_convention, *callee.object));
+            }
+        } else {
+            symbol = static_cast<const NameExpr&>(*call.callee).function;
+            if (symbol->intrinsic != Intrinsic::None) {
+                emit_print(*call.args.front(), symbol->intrinsic == Intrinsic::Print);
+                return nullptr;
             }
         }
-        return builder_.CreateCall(functions_.at(&symbol), args);
+        for (std::size_t i = 0; i < call.args.size(); ++i) {
+            args.push_back(emit_argument(symbol->conventions[i], *call.args[i]));
+        }
+        return builder_.CreateCall(functions_.at(symbol), args);
     }
 
     // -----------------------------------------------------------------------
@@ -737,6 +872,7 @@ private:
     llvm::Function* current_function_ = nullptr;
     const Type* current_return_type_ = nullptr;
     std::unordered_map<const FunctionSymbol*, llvm::Function*> functions_;
+    std::unordered_map<const StructInfo*, llvm::StructType*> struct_types_;
     std::unordered_map<const VarSymbol*, llvm::Value*> addresses_;
     std::vector<LoopTargets> loops_;
 };

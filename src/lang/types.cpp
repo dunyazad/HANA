@@ -49,6 +49,15 @@ const Type* str_type() { return &kStr; }
 const Type* i32_type() { return &kI32; }
 const Type* f64_type() { return &kF64; }
 
+bool is_copy_type(const Type* type)
+{
+    switch (type->kind) {
+    case TypeKind::Str: return false;
+    case TypeKind::Struct: return type->struct_info->is_copy;
+    default: return true;
+    }
+}
+
 unsigned checked_bits(const Type* type)
 {
     return type->is_pointer_sized ? kAssumedPointerBits : type->bits;

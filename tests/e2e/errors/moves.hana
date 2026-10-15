@@ -1,0 +1,21 @@
+{
+  P: struct {
+    name: str,
+    look: fn<(self)> pass,
+    grab: fn<str(self)> self.name,
+  },
+  eat: fn<(sink p: P)> pass,
+  keep: fn<(p: P)> eat(p),
+  main: fn '''
+    let p = P { name: "a" }
+    eat(p)
+    p.look()
+    var q = P { name: "b" }
+    var i = 0
+    while i < 2:
+      eat(q)
+      i += 1
+    q = P { name: "c" }
+    q.look()
+  ''',
+}

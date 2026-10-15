@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,7 +13,8 @@ namespace hana::lang {
 
 enum class VarKind {
     Local,      // let / var
-    Param,      // read or sink parameter
+    Param,      // read parameter: may be read only
+    SinkParam,  // sink parameter: owned by the function
     InoutParam, // inout parameter: refers to the caller's storage
 };
 
@@ -32,6 +34,10 @@ enum class Intrinsic {
 
 struct FunctionSymbol {
     std::string name;
+    // Methods: the owning struct and how 'self' is passed (none for static
+    // functions such as 'Point.new').
+    const StructInfo* owner = nullptr;
+    std::optional<ParamConvention> self_convention;
     std::vector<const Type*> param_types;
     std::vector<ParamConvention> conventions;
     const Type* return_type = nullptr;
@@ -44,6 +50,7 @@ struct FunctionSymbol {
 struct Program {
     std::deque<VarSymbol> vars;
     std::deque<FunctionSymbol> functions;
+    std::deque<StructInfo> structs;
     const FunctionSymbol* main = nullptr;
 };
 

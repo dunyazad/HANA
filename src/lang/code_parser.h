@@ -24,6 +24,9 @@ public:
     // Parses every statement of the region.
     Block parse_body();
 
+    // Parses a region that holds exactly one expression (a field default).
+    ExprPtr parse_standalone_expression();
+
 private:
     // Statements
     void parse_statements_until(TokenKind end, Block& block);
@@ -49,6 +52,7 @@ private:
     ExprPtr parse_postfix(ExprPtr expr);
     ExprPtr parse_call(ExprPtr callee);
     ExprPtr parse_primary();
+    ExprPtr parse_struct_literal();
     ExprPtr parse_int_literal();
     ExprPtr parse_float_literal();
     ExprPtr parse_char_literal();

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "lang/move_checker.h"
+
 namespace hana::lang {
 
 namespace {
@@ -66,7 +68,65 @@ const UnaryExpr* as_inout_mark(const Expr& expr)
     return unary.op == UnaryOp::InoutMark ? &unary : nullptr;
 }
 
+// 'p.pos.x' as written.
+std::string place_text(const Expr& expr)
+{
+    if (expr.kind == ExprKind::Member) {
+        const auto& member = static_cast<const MemberExpr&>(expr);
+        return place_text(*member.object) + "." + member.member;
+    }
+    if (expr.kind == ExprKind::Name) {
+        return static_cast<const NameExpr&>(expr).name;
+    }
+    return "<value>";
+}
+
+// Where 'p.pos.x' starts; a member expression is located at its '.'.
+SourceLocation start_location(const Expr& expr)
+{
+    if (expr.kind == ExprKind::Member) {
+        return start_location(*static_cast<const MemberExpr&>(expr).object);
+    }
+    return expr.location;
+}
+
+// Two places overlap when one contains the other: 'p' and 'p.x' do,
+// 'p.x' and 'p.y' do not.
+bool places_overlap(const Place& a, const Place& b)
+{
+    if (a.root != b.root) {
+        return false;
+    }
+    const std::size_t common = std::min(a.path.size(), b.path.size());
+    return std::equal(a.path.begin(), a.path.begin() + static_cast<std::ptrdiff_t>(common),
+                      b.path.begin());
+}
+
 } // namespace
+
+std::optional<Place> place_of(const Expr& expr)
+{
+    if (expr.kind == ExprKind::Name) {
+        const auto& name = static_cast<const NameExpr&>(expr);
+        if (name.var == nullptr) {
+            return std::nullopt;
+        }
+        return Place{name.var, {}, &expr};
+    }
+    if (expr.kind == ExprKind::Member) {
+        const auto& member = static_cast<const MemberExpr&>(expr);
+        if (member.field_index < 0) {
+            return std::nullopt;
+        }
+        std::optional<Place> place = place_of(*member.object);
+        if (place) {
+            place->path.push_back(member.field_index);
+            place->expr = &expr;
+        }
+        return place;
+    }
+    return std::nullopt;
+}
 
 Sema::Sema(DiagnosticEngine& diagnostics)
     : diagnostics_(&diagnostics)
@@ -77,11 +137,39 @@ std::unique_ptr<Program> Sema::check(Module& module)
 {
     program_ = std::make_unique<Program>();
     declare_intrinsics();
+    for (auto& decl : module.structs) {
+        declare_struct(*decl);
+    }
+    for (auto& decl : module.structs) {
+        declare_struct_fields(*decl);
+    }
+    for (const auto& decl : module.structs) {
+        check_struct_containment(*decl);
+        check_copy_struct(*decl);
+    }
     for (auto& function : module.functions) {
         declare_function(*function);
     }
+    for (auto& decl : module.structs) {
+        for (auto& method : decl->methods) {
+            declare_method(*decl, *method);
+        }
+    }
+    for (auto& decl : module.structs) {
+        check_field_defaults(*decl);
+    }
     for (auto& function : module.functions) {
         check_function_body(*function);
+    }
+    for (auto& decl : module.structs) {
+        for (auto& method : decl->methods) {
+            check_function_body(*method);
+        }
+    }
+    // Moves are checked only on a well-typed module, so every expression
+    // has its type and every name its symbol.
+    if (!diagnostics_->has_errors()) {
+        MoveChecker(*diagnostics_).check(module);
     }
     return std::move(program_);
 }
@@ -110,6 +198,162 @@ void Sema::declare_intrinsics()
     }
 }
 
+// Struct names are declared before any field or function so types can
+// refer to structs declared later in the file.
+void Sema::declare_struct(StructDecl& decl)
+{
+    if (find_builtin_type(decl.name) != nullptr) {
+        diagnostics_->error(decl.location, "'" + decl.name + "' is a built-in type and cannot be "
+                                                            "redefined");
+        return;
+    }
+    if (StructInfo* existing = lookup_struct(decl.name)) {
+        diagnostics_->error(decl.location, "struct '" + decl.name + "' is already defined");
+        diagnostics_->note(existing->location, "previous definition is here");
+        return;
+    }
+    StructInfo& info = program_->structs.emplace_back();
+    info.name = decl.name;
+    info.location = decl.location;
+    info.is_copy = decl.is_copy;
+    info.type.name = info.name;
+    info.type.struct_info = &info;
+    decl.type = &info.type;
+    structs_[info.name] = &info;
+}
+
+void Sema::declare_struct_fields(StructDecl& decl)
+{
+    if (decl.type == nullptr) {
+        return; // duplicate definition, already reported
+    }
+    StructInfo& info = *lookup_struct(decl.name);
+    for (FieldDecl& field : decl.fields) {
+        if (info.find_field(field.name) >= 0) {
+            diagnostics_->error(field.location, "field '" + field.name + "' is already declared in '" +
+                                                    decl.name + "'");
+            continue;
+        }
+        StructField& entry = info.fields.emplace_back();
+        entry.name = field.name;
+        entry.type = resolve_type(field.type);
+        entry.default_value = field.default_value.get();
+        entry.location = field.location;
+    }
+}
+
+// A struct cannot hold itself by value: its size would be infinite.
+void Sema::check_struct_containment(const StructDecl& decl)
+{
+    if (decl.type == nullptr) {
+        return;
+    }
+    const StructInfo& info = *decl.type->struct_info;
+    for (const StructField& field : info.fields) {
+        if (!field.type->is_struct()) {
+            continue;
+        }
+        std::vector<const StructInfo*> visiting;
+        if (contains_struct(*field.type->struct_info, info, visiting)) {
+            diagnostics_->error(field.location, "struct '" + info.name + "' contains itself through "
+                                                    "field '" + field.name + "'; a struct cannot "
+                                                    "hold itself by value");
+        }
+    }
+}
+
+bool Sema::contains_struct(const StructInfo& outer, const StructInfo& inner,
+                           std::vector<const StructInfo*>& visiting) const
+{
+    if (&outer == &inner) {
+        return true;
+    }
+    if (std::find(visiting.begin(), visiting.end(), &outer) != visiting.end()) {
+        return false; // a cycle that does not pass through 'inner', reported elsewhere
+    }
+    visiting.push_back(&outer);
+    for (const StructField& field : outer.fields) {
+        if (field.type->is_struct() && contains_struct(*field.type->struct_info, inner, visiting)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Sema::check_copy_struct(const StructDecl& decl)
+{
+    if (decl.type == nullptr || !decl.is_copy) {
+        return;
+    }
+    for (const StructField& field : decl.type->struct_info->fields) {
+        if (!field.type->is_error() && !is_copy_type(field.type)) {
+            diagnostics_->error(field.location, "'" + decl.name + "' is declared 'struct copy', but "
+                                                    "field '" + field.name + "' of type " +
+                                                    quoted(field.type) + " is not Copy");
+        }
+    }
+}
+
+// Defaults are checked without any variables in scope; they are evaluated
+// again for every struct value that leaves the field out.
+void Sema::check_field_defaults(StructDecl& decl)
+{
+    if (decl.type == nullptr) {
+        return;
+    }
+    const StructInfo& info = *decl.type->struct_info;
+    for (FieldDecl& field : decl.fields) {
+        if (!field.default_value) {
+            continue;
+        }
+        const int index = info.find_field(field.name);
+        const Type* type = index >= 0 ? info.fields[static_cast<std::size_t>(index)].type
+                                      : error_type();
+        return_type_ = void_type();
+        push_scope();
+        const Type* value = check_expr(*field.default_value, type);
+        pop_scope();
+        expect_type(type, value, field.default_value->location);
+    }
+}
+
+FunctionSymbol& Sema::create_function_symbol(FnDecl& function, std::string name)
+{
+    FunctionSymbol& symbol = program_->functions.emplace_back();
+    symbol.name = std::move(name);
+    symbol.decl = &function;
+    symbol.self_convention = function.self_convention;
+    for (const Param& param : function.params) {
+        symbol.param_types.push_back(resolve_type(param.type));
+        symbol.conventions.push_back(param.convention);
+    }
+    symbol.return_type = function.return_type ? resolve_type(*function.return_type) : void_type();
+    function.symbol = &symbol;
+    return symbol;
+}
+
+void Sema::declare_method(StructDecl& decl, FnDecl& method)
+{
+    if (decl.type == nullptr) {
+        return;
+    }
+    StructInfo& info = *lookup_struct(decl.name);
+    if (info.find_field(method.name) >= 0) {
+        diagnostics_->error(method.location, "'" + method.name + "' is already declared as a field "
+                                                                "of '" + decl.name + "'");
+        return;
+    }
+    if (auto existing = info.methods.find(method.name); existing != info.methods.end()) {
+        diagnostics_->error(method.location, "function '" + method.name +
+                                                 "' is already defined in '" + decl.name + "'");
+        diagnostics_->note(existing->second->decl->location, "previous definition is here");
+        return;
+    }
+    FunctionSymbol& symbol = create_function_symbol(method, decl.name + "." + method.name);
+    symbol.owner = &info;
+    info.methods[method.name] = &symbol;
+}
+
 void Sema::declare_function(FnDecl& function)
 {
     if (const FunctionSymbol* existing = lookup_function(function.name)) {
@@ -119,15 +363,13 @@ void Sema::declare_function(FnDecl& function)
         }
         return;
     }
-    FunctionSymbol& symbol = program_->functions.emplace_back();
-    symbol.name = function.name;
-    symbol.decl = &function;
-    for (const Param& param : function.params) {
-        symbol.param_types.push_back(resolve_type(param.type));
-        symbol.conventions.push_back(param.convention);
+    if (const StructInfo* existing = lookup_struct(function.name)) {
+        diagnostics_->error(function.location, "'" + function.name + "' is already defined as a "
+                                                                    "struct");
+        diagnostics_->note(existing->location, "the struct is defined here");
+        return;
     }
-    symbol.return_type = function.return_type ? resolve_type(*function.return_type) : void_type();
-    function.symbol = &symbol;
+    FunctionSymbol& symbol = create_function_symbol(function, function.name);
     functions_[symbol.name] = &symbol;
     if (symbol.name == "main") {
         check_main_signature(symbol);
@@ -160,11 +402,17 @@ void Sema::check_body_once(FnDecl& function)
 {
     return_type_ = function.symbol->return_type;
     push_scope();
+    declare_self(function);
     for (std::size_t i = 0; i < function.params.size(); ++i) {
         Param& param = function.params[i];
         const bool is_inout = param.convention == ParamConvention::Inout;
-        param.symbol = declare_var(param.name, function.symbol->param_types[i],
-                                   is_inout ? VarKind::InoutParam : VarKind::Param, is_inout,
+        VarKind kind = VarKind::Param;
+        if (is_inout) {
+            kind = VarKind::InoutParam;
+        } else if (param.convention == ParamConvention::Sink) {
+            kind = VarKind::SinkParam;
+        }
+        param.symbol = declare_var(param.name, function.symbol->param_types[i], kind, is_inout,
                                    param.location);
     }
     const bool terminates = check_block(function.body);
@@ -174,6 +422,21 @@ void Sema::check_body_once(FnDecl& function)
                            "function '" + function.name + "' must return a value of type " +
                                quoted(return_type_) + " on every path");
     }
+}
+
+void Sema::declare_self(FnDecl& function)
+{
+    if (!function.self_convention || function.owner == nullptr || function.owner->type == nullptr) {
+        return;
+    }
+    VarKind kind = VarKind::Param;
+    if (*function.self_convention == ParamConvention::Inout) {
+        kind = VarKind::InoutParam;
+    } else if (*function.self_convention == ParamConvention::Sink) {
+        kind = VarKind::SinkParam;
+    }
+    function.self_symbol = declare_var("self", function.owner->type, kind,
+                                       kind == VarKind::InoutParam, function.self_location);
 }
 
 // A variable initialized with an untyped literal and no declared type takes
@@ -308,6 +571,9 @@ const Type* Sema::resolve_type(const TypeExpr& type)
     if (const Type* builtin = find_builtin_type(type.name)) {
         return builtin;
     }
+    if (const StructInfo* info = lookup_struct(type.name)) {
+        return &info->type;
+    }
     diagnostics_->error(type.location, "unknown type '" + type.name + "'");
     return error_type();
 }
@@ -365,8 +631,7 @@ bool Sema::check_let(LetStmt& let)
 
 bool Sema::check_assign(AssignStmt& assign)
 {
-    const VarSymbol* target = check_assignment_target(*assign.target);
-    const Type* target_type = target != nullptr ? target->type : error_type();
+    const Type* target_type = check_assignment_target(*assign.target);
     if (assign.op && !target_type->is_error()) {
         binary_result_type(*assign.op, target_type, assign.op_location);
     }
@@ -375,34 +640,74 @@ bool Sema::check_assign(AssignStmt& assign)
     return false;
 }
 
-const VarSymbol* Sema::check_assignment_target(Expr& target)
+// A target is a variable or a field path of one: 'x', 'p.pos.x'.
+const Type* Sema::check_assignment_target(Expr& target)
 {
-    if (target.kind != ExprKind::Name) {
+    if (target.kind != ExprKind::Name && target.kind != ExprKind::Member) {
         if (target.kind != ExprKind::Error) {
             check_expr(target, nullptr);
-            diagnostics_->error(target.location, "only variables can be assigned to for now");
+            diagnostics_->error(target.location,
+                               "only variables and their fields can be assigned to for now");
         }
-        return nullptr;
+        return error_type();
     }
-    auto& name = static_cast<NameExpr&>(target);
-    check_name(name);
-    const VarSymbol* var = name.var;
-    if (var == nullptr) {
-        return nullptr;
+    const Type* type = check_expr(target, nullptr);
+    if (type->is_error()) {
+        return type;
     }
-    if (!var->is_mutable) {
-        if (var->kind == VarKind::Param) {
-            diagnostics_->error(target.location, "cannot assign to parameter '" + var->name +
-                                                    "'; declare it 'inout' to modify the "
-                                                    "caller's value");
+    std::optional<Place> place = place_of(target);
+    if (!place) {
+        diagnostics_->error(target.location, "cannot assign to a field of a temporary value");
+        return type;
+    }
+    require_mutable(*place, MutationKind::Assign, {});
+    return type;
+}
+
+// Reports an error when the root variable of the place cannot be modified.
+void Sema::require_mutable(const Place& place, MutationKind kind, const std::string& method_name)
+{
+    const VarSymbol& var = *place.root;
+    if (var.is_mutable) {
+        return;
+    }
+    const std::string text = place_text(*place.expr);
+    const bool whole = place.path.empty();
+    const bool is_param = var.kind == VarKind::Param || var.kind == VarKind::SinkParam;
+    std::string remedy;
+    if (is_param && var.name == "self") {
+        remedy = "declare the method with 'inout self' to modify the value it is called on";
+    } else if (is_param) {
+        remedy = "declare it 'inout' to modify the caller's value";
+    } else {
+        remedy = "use 'var' to make it mutable";
+    }
+    std::string message;
+    switch (kind) {
+    case MutationKind::Assign:
+        if (whole && is_param) {
+            message = "cannot assign to parameter '" + var.name + "'; " + remedy;
+        } else if (whole) {
+            message = "cannot assign to '" + var.name + "' because it is declared with 'let'; " +
+                      remedy;
         } else {
-            diagnostics_->error(target.location, "cannot assign to '" + var->name +
-                                                    "' because it is declared with 'let'; use "
-                                                    "'var' to make it mutable");
+            message = "cannot assign to '" + text + "' because '" + var.name + "' is " +
+                      (is_param ? "a read-only parameter; " : "declared with 'let'; ") + remedy;
         }
-        diagnostics_->note(var->location, "'" + var->name + "' is declared here");
+        break;
+    case MutationKind::PassInout:
+        message = "cannot pass '" + text + "' as inout because " +
+                  (whole ? std::string("it is not mutable")
+                         : "'" + var.name + "' is not mutable");
+        break;
+    case MutationKind::InoutReceiver:
+        message = "cannot call '" + method_name + "' on '" + text +
+                  "' because it modifies its value ('inout self') and '" + var.name +
+                  "' is not mutable; " + remedy;
+        break;
     }
-    return var;
+    diagnostics_->error(start_location(*place.expr), message);
+    diagnostics_->note(var.location, "'" + var.name + "' is declared here");
 }
 
 bool Sema::check_expression_statement(ExprStmt& stmt)
@@ -502,7 +807,10 @@ const Type* Sema::check_expr(Expr& expr, const Type* expected)
     case ExprKind::Unary: type = check_unary(static_cast<UnaryExpr&>(expr), expected); break;
     case ExprKind::Binary: type = check_binary(static_cast<BinaryExpr&>(expr), expected); break;
     case ExprKind::Call: type = check_call(static_cast<CallExpr&>(expr)); break;
-    case ExprKind::Member: type = unsupported(expr, "member access is"); break;
+    case ExprKind::StructLiteral:
+        type = check_struct_literal(static_cast<StructLiteralExpr&>(expr));
+        break;
+    case ExprKind::Member: type = check_member(static_cast<MemberExpr&>(expr)); break;
     case ExprKind::Index: type = unsupported(expr, "indexing is"); break;
     case ExprKind::Try: type = unsupported(expr, "the '?' operator is"); break;
     }
@@ -557,6 +865,8 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
         const Type* type = check_expr(*part, nullptr);
         if (type->is_void()) {
             diagnostics_->error(part->location, "expression has no value to insert");
+        } else if (type->is_struct()) {
+            check_printable(type, part->location);
         }
     }
     allow_interpolation_ = saved;
@@ -577,6 +887,11 @@ const Type* Sema::check_name(NameExpr& name, const Type* expected)
         diagnostics_->error(name.location, "'" + name.name +
                                               "' is a function; functions cannot be used as "
                                               "values yet, call it with '()'");
+        return error_type();
+    }
+    if (lookup_struct(name.name) != nullptr) {
+        diagnostics_->error(name.location, "'" + name.name + "' is a struct; create a value with '" +
+                                              name.name + " { ... }'");
         return error_type();
     }
     diagnostics_->error(name.location, "unknown name '" + name.name + "'");
@@ -759,23 +1074,130 @@ const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
     return result;
 }
 
-const Type* Sema::check_call(CallExpr& call)
+// 'Name { field: value, ... }': every field without a default must be
+// given, each at most once.
+const Type* Sema::check_struct_literal(StructLiteralExpr& lit)
 {
-    if (call.callee->kind != ExprKind::Name) {
-        check_expr(*call.callee, nullptr);
-        for (auto& arg : call.args) {
-            check_expr(*arg, nullptr);
-        }
-        if (!call.callee->type->is_error()) {
-            diagnostics_->error(call.location, "only named functions can be called for now");
+    const StructInfo* info = lookup_struct(lit.type_name);
+    if (info == nullptr) {
+        diagnostics_->error(lit.location, "unknown struct '" + lit.type_name + "'");
+        for (auto& field : lit.fields) {
+            check_expr(*field.value, nullptr);
         }
         return error_type();
     }
-    auto& callee = static_cast<NameExpr&>(*call.callee);
+    lit.field_order.assign(info->fields.size(), -1);
+    for (std::size_t i = 0; i < lit.fields.size(); ++i) {
+        StructLiteralExpr::FieldInit& field = lit.fields[i];
+        const int index = info->find_field(field.name);
+        if (index < 0) {
+            diagnostics_->error(field.location, "'" + info->name + "' has no field '" + field.name +
+                                                    "'");
+            check_expr(*field.value, nullptr);
+            continue;
+        }
+        int& slot = lit.field_order[static_cast<std::size_t>(index)];
+        if (slot >= 0) {
+            diagnostics_->error(field.location, "field '" + field.name + "' is given more than once");
+            check_expr(*field.value, nullptr);
+            continue;
+        }
+        slot = static_cast<int>(i);
+        const Type* field_type = info->fields[static_cast<std::size_t>(index)].type;
+        const Type* value = check_expr(*field.value, field_type);
+        expect_type(field_type, value, field.value->location);
+    }
+    report_missing_fields(lit, *info);
+    return &info->type;
+}
+
+void Sema::report_missing_fields(const StructLiteralExpr& lit, const StructInfo& info)
+{
+    std::string missing;
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < info.fields.size(); ++i) {
+        if (lit.field_order[i] >= 0 || info.fields[i].default_value != nullptr) {
+            continue;
+        }
+        missing += (count == 0 ? "'" : ", '") + info.fields[i].name + "'";
+        ++count;
+    }
+    if (count > 0) {
+        diagnostics_->error(lit.location, std::string(count == 1 ? "missing field " : "missing fields ") +
+                                             missing + " in '" + info.name + " { ... }'");
+    }
+}
+
+// A field read 'value.field'. Calls of methods are handled by check_call.
+const Type* Sema::check_member(MemberExpr& member)
+{
+    if (const StructInfo* info = static_struct_name(*member.object)) {
+        diagnostics_->error(member.location, "'" + info->name + "." + member.member +
+                                                "' is not a value; call a function with '()'");
+        return error_type();
+    }
+    const Type* object = check_expr(*member.object, nullptr);
+    if (object->is_error()) {
+        return error_type();
+    }
+    if (!object->is_struct()) {
+        diagnostics_->error(member.location, "a value of type " + quoted(object) + " has no field '" +
+                                                member.member + "'");
+        return error_type();
+    }
+    const StructInfo& info = *object->struct_info;
+    const int index = info.find_field(member.member);
+    if (index >= 0) {
+        member.field_index = index;
+        return info.fields[static_cast<std::size_t>(index)].type;
+    }
+    if (info.methods.count(member.member) != 0) {
+        diagnostics_->error(member.location, "methods cannot be used as values yet; call '" +
+                                                member.member + "' with '()'");
+    } else {
+        diagnostics_->error(member.location, "'" + info.name + "' has no field '" + member.member +
+                                                "'");
+    }
+    return error_type();
+}
+
+// The struct named by 'Point' in 'Point.new(...)', unless a variable of that
+// name hides it.
+const StructInfo* Sema::static_struct_name(const Expr& object) const
+{
+    if (object.kind != ExprKind::Name) {
+        return nullptr;
+    }
+    const std::string& name = static_cast<const NameExpr&>(object).name;
+    return lookup_var(name) == nullptr ? lookup_struct(name) : nullptr;
+}
+
+const Type* Sema::check_call(CallExpr& call)
+{
+    if (call.callee->kind == ExprKind::Name) {
+        return check_function_call(call, static_cast<NameExpr&>(*call.callee));
+    }
+    if (call.callee->kind == ExprKind::Member) {
+        return check_method_call(call, static_cast<MemberExpr&>(*call.callee));
+    }
+    check_expr(*call.callee, nullptr);
+    check_args_without_callee(call);
+    if (!call.callee->type->is_error()) {
+        diagnostics_->error(call.location, "only named functions can be called for now");
+    }
+    return error_type();
+}
+
+const Type* Sema::check_function_call(CallExpr& call, NameExpr& callee)
+{
     callee.type = void_type();
     const FunctionSymbol* function = nullptr;
     if (lookup_var(callee.name) != nullptr) {
         diagnostics_->error(callee.location, "'" + callee.name + "' is a variable, not a function");
+    } else if (lookup_struct(callee.name) != nullptr) {
+        diagnostics_->error(callee.location, "'" + callee.name + "' is a struct; create a value "
+                                                                "with '" + callee.name +
+                                                                " { ... }'");
     } else {
         function = lookup_function(callee.name);
         if (function == nullptr) {
@@ -783,17 +1205,119 @@ const Type* Sema::check_call(CallExpr& call)
         }
     }
     if (function == nullptr) {
-        for (auto& arg : call.args) {
-            check_expr(*arg, nullptr);
-        }
+        check_args_without_callee(call);
         return error_type();
     }
     callee.function = function;
     if (function->intrinsic != Intrinsic::None) {
         return check_intrinsic_call(call, *function);
     }
-    check_call_arguments(call, *function);
+    check_call_arguments(call, *function, std::nullopt);
     return function->return_type;
+}
+
+// 'Point.new(...)' calls a function of the struct without 'self';
+// 'p.area()' calls a method on the value p.
+const Type* Sema::check_method_call(CallExpr& call, MemberExpr& callee)
+{
+    callee.type = void_type();
+    const FunctionSymbol* function = nullptr;
+    std::optional<Place> receiver;
+    if (const StructInfo* info = static_struct_name(*callee.object)) {
+        callee.object->type = &info->type;
+        function = find_static_function(callee, *info);
+    } else {
+        const Type* object = check_expr(*callee.object, nullptr);
+        function = find_method(callee, object);
+        if (function != nullptr) {
+            receiver = check_receiver(callee, *function);
+        }
+    }
+    if (function == nullptr) {
+        check_args_without_callee(call);
+        return error_type();
+    }
+    callee.method = function;
+    check_call_arguments(call, *function, receiver);
+    return function->return_type;
+}
+
+const FunctionSymbol* Sema::find_static_function(MemberExpr& callee, const StructInfo& info)
+{
+    auto it = info.methods.find(callee.member);
+    if (it == info.methods.end()) {
+        diagnostics_->error(callee.location, "'" + info.name + "' has no function '" +
+                                                callee.member + "'");
+        return nullptr;
+    }
+    if (it->second->self_convention) {
+        diagnostics_->error(callee.location, "'" + it->second->name + "' takes 'self'; call it on a "
+                                                                     "value, as in 'value." +
+                                                                     callee.member + "()'");
+        return nullptr;
+    }
+    callee.is_static_call = true;
+    return it->second;
+}
+
+const FunctionSymbol* Sema::find_method(MemberExpr& callee, const Type* receiver)
+{
+    if (receiver->is_error()) {
+        return nullptr;
+    }
+    if (!receiver->is_struct()) {
+        diagnostics_->error(callee.location, "a value of type " + quoted(receiver) +
+                                                " has no method '" + callee.member + "'");
+        return nullptr;
+    }
+    const StructInfo& info = *receiver->struct_info;
+    auto it = info.methods.find(callee.member);
+    if (it == info.methods.end()) {
+        if (info.find_field(callee.member) >= 0) {
+            diagnostics_->error(callee.location, "'" + callee.member + "' is a field of '" +
+                                                    info.name + "', not a function");
+        } else {
+            diagnostics_->error(callee.location, "'" + info.name + "' has no method '" +
+                                                    callee.member + "'");
+        }
+        return nullptr;
+    }
+    if (!it->second->self_convention) {
+        diagnostics_->error(callee.location, "'" + it->second->name + "' does not take 'self'; "
+                                                                     "call it as '" +
+                                                                     it->second->name + "(...)'");
+        return nullptr;
+    }
+    return it->second;
+}
+
+// The value a method is called on is passed like an argument for 'self':
+// an 'inout self' method needs a mutable variable or field of one.
+std::optional<Place> Sema::check_receiver(MemberExpr& callee, const FunctionSymbol& method)
+{
+    std::optional<Place> place = place_of(*callee.object);
+    if (*method.self_convention != ParamConvention::Inout) {
+        return place;
+    }
+    if (!place) {
+        diagnostics_->error(callee.object->location,
+                           "'" + method.name + "' modifies its value ('inout self'), so it must "
+                                               "be called on a variable or a field of one");
+        return std::nullopt;
+    }
+    require_mutable(*place, MutationKind::InoutReceiver, method.name);
+    return place;
+}
+
+void Sema::check_args_without_callee(CallExpr& call)
+{
+    for (auto& arg : call.args) {
+        if (const UnaryExpr* mark = as_inout_mark(*arg)) {
+            check_expr(*mark->operand, nullptr);
+        } else {
+            check_expr(*arg, nullptr);
+        }
+    }
 }
 
 const Type* Sema::check_intrinsic_call(CallExpr& call, const FunctionSymbol& function)
@@ -809,13 +1333,22 @@ const Type* Sema::check_intrinsic_call(CallExpr& call, const FunctionSymbol& fun
     allow_interpolation_ = true;
     const Type* type = check_expr(*call.args.front(), nullptr);
     allow_interpolation_ = false;
-    if (type->is_void()) {
-        diagnostics_->error(call.args.front()->location, "expression has no value to print");
-    }
+    check_printable(type, call.args.front()->location);
     return void_type();
 }
 
-void Sema::check_call_arguments(CallExpr& call, const FunctionSymbol& function)
+void Sema::check_printable(const Type* type, const SourceLocation& location)
+{
+    if (type->is_void()) {
+        diagnostics_->error(location, "expression has no value to print");
+    } else if (type->is_struct()) {
+        diagnostics_->error(location, "a value of type " + quoted(type) +
+                                          " cannot be printed yet; print its fields");
+    }
+}
+
+void Sema::check_call_arguments(CallExpr& call, const FunctionSymbol& function,
+                                const std::optional<Place>& receiver)
 {
     if (call.args.size() != function.param_types.size()) {
         diagnostics_->error(call.location, "'" + function.name + "' expects " +
@@ -823,16 +1356,20 @@ void Sema::check_call_arguments(CallExpr& call, const FunctionSymbol& function)
                                               " argument(s), found " +
                                               std::to_string(call.args.size()));
     }
-    std::vector<const VarSymbol*> inout_vars;
+    std::vector<Place> inout_places;
+    if (receiver && function.self_convention == ParamConvention::Inout) {
+        inout_places.push_back(*receiver);
+    }
     for (std::size_t i = 0; i < call.args.size(); ++i) {
         Expr& arg = *call.args[i];
         if (i >= function.param_types.size()) {
-            check_expr(arg, nullptr);
+            const UnaryExpr* mark = as_inout_mark(arg);
+            check_expr(mark != nullptr ? *mark->operand : arg, nullptr);
             continue;
         }
         const Type* param_type = function.param_types[i];
         if (function.conventions[i] == ParamConvention::Inout) {
-            check_inout_argument(arg, param_type, inout_vars);
+            check_inout_argument(arg, param_type, inout_places);
             continue;
         }
         if (const UnaryExpr* mark = as_inout_mark(arg)) {
@@ -845,11 +1382,10 @@ void Sema::check_call_arguments(CallExpr& call, const FunctionSymbol& function)
         const Type* type = check_expr(arg, param_type);
         expect_type(param_type, type, arg.location);
     }
-    check_inout_exclusivity(call, function, inout_vars);
+    check_inout_exclusivity(call, function, inout_places, receiver);
 }
 
-void Sema::check_inout_argument(Expr& arg, const Type* param_type,
-                                std::vector<const VarSymbol*>& inout_vars)
+void Sema::check_inout_argument(Expr& arg, const Type* param_type, std::vector<Place>& inout_places)
 {
     const UnaryExpr* mark = as_inout_mark(arg);
     if (mark == nullptr) {
@@ -859,49 +1395,58 @@ void Sema::check_inout_argument(Expr& arg, const Type* param_type,
                            "'&x'");
         return;
     }
-    if (mark->operand->kind != ExprKind::Name) {
-        check_expr(*mark->operand, nullptr);
-        diagnostics_->error(mark->operand->location, "only a variable can be passed as inout");
-        return;
-    }
-    auto& name = static_cast<NameExpr&>(*mark->operand);
-    const Type* type = check_name(name);
+    Expr& operand = *mark->operand;
+    const Type* type = check_expr(operand, nullptr);
     arg.type = type;
-    if (name.var == nullptr) {
+    if (type->is_error()) {
         return;
     }
-    if (!name.var->is_mutable) {
-        diagnostics_->error(name.location, "cannot pass '" + name.name +
-                                              "' as inout because it is not mutable");
-        diagnostics_->note(name.var->location, "'" + name.name + "' is declared here");
+    std::optional<Place> place = place_of(operand);
+    if (!place) {
+        diagnostics_->error(operand.location,
+                           "only a variable or a field of one can be passed as inout");
+        return;
     }
-    expect_type(param_type, type, name.location);
-    inout_vars.push_back(name.var);
+    require_mutable(*place, MutationKind::PassInout, {});
+    expect_type(param_type, type, operand.location);
+    inout_places.push_back(*place);
 }
 
+// While a call runs, a place passed as inout must not be reachable through
+// any other argument or the receiver.
 void Sema::check_inout_exclusivity(CallExpr& call, const FunctionSymbol& function,
-                                   const std::vector<const VarSymbol*>& inout_vars)
+                                   const std::vector<Place>& inout_places,
+                                   const std::optional<Place>& receiver)
 {
-    for (std::size_t i = 0; i < inout_vars.size(); ++i) {
-        for (std::size_t j = i + 1; j < inout_vars.size(); ++j) {
-            if (inout_vars[i] == inout_vars[j]) {
-                diagnostics_->error(call.location, "'" + inout_vars[i]->name +
+    for (std::size_t i = 0; i < inout_places.size(); ++i) {
+        for (std::size_t j = i + 1; j < inout_places.size(); ++j) {
+            if (places_overlap(inout_places[i], inout_places[j])) {
+                diagnostics_->error(call.location, "'" + place_text(*inout_places[j].expr) +
                                                       "' is passed as inout more than once in "
                                                       "this call");
             }
         }
     }
+    std::vector<Place> reads;
+    if (receiver && function.self_convention != ParamConvention::Inout) {
+        reads.push_back(*receiver);
+    }
     for (std::size_t i = 0; i < call.args.size() && i < function.conventions.size(); ++i) {
-        if (function.conventions[i] == ParamConvention::Inout ||
-            call.args[i]->kind != ExprKind::Name) {
+        if (function.conventions[i] == ParamConvention::Inout) {
             continue;
         }
-        const VarSymbol* read = static_cast<const NameExpr&>(*call.args[i]).var;
-        if (read != nullptr && std::find(inout_vars.begin(), inout_vars.end(), read) !=
-                                   inout_vars.end()) {
-            diagnostics_->error(call.args[i]->location, "'" + read->name +
-                                                           "' is passed as inout and also read "
-                                                           "in the same call");
+        if (std::optional<Place> read = place_of(*call.args[i])) {
+            reads.push_back(*read);
+        }
+    }
+    for (const Place& read : reads) {
+        for (const Place& written : inout_places) {
+            if (places_overlap(read, written)) {
+                diagnostics_->error(start_location(*read.expr), "'" + place_text(*read.expr) +
+                                                            "' is passed as inout and also read "
+                                                            "in the same call");
+                break;
+            }
         }
     }
 }
@@ -970,6 +1515,12 @@ const FunctionSymbol* Sema::lookup_function(const std::string& name) const
 {
     auto it = functions_.find(name);
     return it != functions_.end() ? it->second : nullptr;
+}
+
+StructInfo* Sema::lookup_struct(const std::string& name) const
+{
+    auto it = structs_.find(name);
+    return it != structs_.end() ? it->second : nullptr;
 }
 
 } // namespace hana::lang
