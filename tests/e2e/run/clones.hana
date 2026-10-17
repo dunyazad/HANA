@@ -1,0 +1,64 @@
+{
+  Point: struct {
+    x: i32,
+    y: i32,
+  },
+  Named: struct {
+    name: str,
+    at: Point,
+    tags: (str, str),
+  },
+  Counted: struct {
+    name: str,
+    copies: i32 = 0,
+    clone: fn<Counted(self)> Counted { name: self.name + "'", copies: self.copies + 1 },
+  },
+  Handle: struct {
+    id: i32,
+    clone: fn<Handle(self)> Handle { id: self.id + 100 },
+    drop: fn<(inout self)> print(f"close {self.id}"),
+  },
+  Wrapper: struct {
+    counted: Counted,
+    label: str,
+  },
+  Shape: enum {
+    Label: { text: str },
+    Dot: {},
+  },
+  describe: fn<str(s: Shape)> '''
+    match s:
+      Label(t): return f"label {t}"
+      Dot: return "dot"
+  ''',
+  main: fn '''
+    let a = Named { name: "a", at: Point { x: 1, y: 2 }, tags: ("t1", "t2") }
+    var b = a.clone()
+    b.name += "-copy"
+    b.at.x = 10
+    print(f"{a.name} {a.at.x} {a.tags.0}")
+    print(f"{b.name} {b.at.x} {b.tags.1}")
+    let c = Counted { name: "c" }
+    let d = c.clone().clone()
+    print(f"{d.name} {d.copies}")
+    let s = Shape.Label { text: "hi" + "!" }
+    let s2 = s.clone()
+    print(describe(s))
+    print(describe(s2))
+    print(describe(Shape.Dot.clone()))
+    let o: str? = "maybe"
+    let o2 = o.clone()
+    match o2:
+      Some(v): print(v)
+      null: print("none")
+    let t = ("x" + "y", 3)
+    let t2 = t.clone()
+    print(f"{t2.0} {t2.1} {t.0}")
+    let w = Wrapper { counted: Counted { name: "w" }, label: "wrap" }
+    let w2 = w.clone()
+    print(f"{w2.counted.name} {w2.counted.copies} {w2.label}")
+    let h = Handle { id: 1 }
+    let h2 = h.clone()
+    print(f"handles {h.id} {h2.id}")
+  ''',
+}

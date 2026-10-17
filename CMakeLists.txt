@@ -20,7 +20,7 @@ if(LLVM_LINK_LLVM_DYLIB)
     set(HANA_LLVM_LIBS LLVM)
 else()
     llvm_map_components_to_libnames(HANA_LLVM_LIBS
-        core support passes target targetparser analysis nativecodegen)
+        core support passes target targetparser analysis nativecodegen instrumentation)
 endif()
 
 if(MSVC)
@@ -60,6 +60,7 @@ target_compile_options(hana_lang PRIVATE ${HANA_WARNING_FLAGS})
 add_library(hana_codegen STATIC
     src/codegen/codegen.cpp
     src/codegen/codegen_match.cpp
+    src/codegen/codegen_memory.cpp
 )
 target_link_libraries(hana_codegen PUBLIC hana_lang ${HANA_LLVM_LIBS})
 target_include_directories(hana_codegen SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})

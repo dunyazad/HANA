@@ -119,10 +119,10 @@ TEST(sema_casts)
     EXPECT(s->has_error("cannot convert 'i32' to 'bool'"));
 }
 
-TEST(sema_format_string_only_in_print)
+TEST(sema_format_string_is_a_str_value)
 {
-    auto r = check("{ f: fn<(x: i32)> '''\n  let s = f\"{x}\"\n''' }");
-    EXPECT(r->has_error("format strings"));
+    auto r = check("{ f: fn<str(x: i32)> '''\n  let s = f\"{x}\"\n  return s + \"!\"\n''' }");
+    EXPECT(!r->diagnostics.has_errors());
 }
 
 TEST(sema_main_signature)
@@ -564,4 +564,22 @@ TEST(sema_wrapped_values_move)
     EXPECT(check("{ P: struct { s: str }, keep: fn<(o: P?)> pass, f: fn '''\n  let q = P { s: \"a\" }\n"
                  "  keep(q)\n  keep(q)\n''' }")
                ->has_error("use of moved value 'q'"));
+}
+
+TEST(sema_user_clone_is_called)
+{
+    auto r = check("{ H: struct { id: i32, clone: fn<H(self)> H { id: self.id + 1 },\n"
+                   "  drop: fn<(inout self)> pass },\n"
+                   "  f: fn '''\n  let a = H { id: 1 }\n  let b = a.clone().clone()\n''' }");
+    EXPECT(!r->diagnostics.has_errors());
+}
+
+TEST(sema_no_part_of_temporary_with_drop)
+{
+    auto r = check("{ P: struct { s: str, drop: fn<(inout self)> pass },\n"
+                   "  make: fn<P()> P { s: \"a\" }, take: fn<(sink s: str)> pass,\n"
+                   "  f: fn '''\n  take(make().s)\n  let n = make().s.len()\n''' }");
+    EXPECT(r->has_error("cannot take 's' out of a temporary value of type 'P', because it has "
+                        "'drop'"));
+    EXPECT(r->diagnostics.diagnostics().size() == 1);
 }

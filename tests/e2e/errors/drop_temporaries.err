@@ -1,0 +1,1 @@
+11:12: error: cannot take 'item' out of a temporary value of type 'Slot', because it has 'drop'; store the value in a variable first

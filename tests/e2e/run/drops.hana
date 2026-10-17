@@ -1,0 +1,69 @@
+{
+  Noisy: struct {
+    name: str,
+    drop: fn<(inout self)> print(f"drop {self.name}"),
+  },
+  Pair: struct {
+    left: Noisy,
+    right: Noisy,
+    drop: fn<(inout self)> print(f"drop pair of {self.left.name} and {self.right.name}"),
+  },
+  Holder: struct {
+    first: Noisy,
+    second: Noisy,
+  },
+  Slot: enum {
+    Full: { item: Noisy },
+    Empty: {},
+  },
+  make: fn<Noisy(sink name: str)> Noisy { name: name },
+  consume: fn<(sink n: Noisy)> print(f"consume {n.name}"),
+  pass_through: fn<Noisy(sink n: Noisy)> n,
+  early: fn<i32(flag: bool)> '''
+    let a = make("early-a")
+    if flag:
+      let b = make("early-b")
+      return 1
+    return 2
+  ''',
+  main: fn '''
+    print("-- reverse order")
+    let a = make("a")
+    let b = make("b")
+    print("-- fields after drop")
+    let p = Pair { left: make("l"), right: make("r") }
+    print("-- move into function")
+    let c = make("c")
+    consume(c)
+    print("-- returned value")
+    let d = pass_through(make("d"))
+    print("-- reassignment")
+    var e = make("e1")
+    e = make("e2")
+    print("-- temporary")
+    print(make("temp").name)
+    print("-- loop")
+    for i in 0..3:
+      let x = make(f"loop{i}")
+      if i == 1:
+        continue
+      if i == 2:
+        break
+      print(f"body {i}")
+    print("-- return")
+    print(early(true))
+    print(early(false))
+    print("-- enum")
+    let s = Slot.Full { item: make("slot") }
+    let empty = Slot.Empty
+    print("-- option")
+    var o: Noisy? = make("opt")
+    o = null
+    let o2: Noisy? = make("opt2")
+    print("-- field move")
+    let h = Holder { first: make("h1"), second: make("h2") }
+    let first = h.first
+    print("after field move")
+    print("-- end")
+  ''',
+}

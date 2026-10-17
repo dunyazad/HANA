@@ -1,0 +1,34 @@
+{
+  Noisy: struct {
+    name: str,
+    drop: fn<(inout self)> print(self.name),
+  },
+  Pair: struct {
+    left: Noisy,
+    right: str,
+    drop: fn<(inout self)> print("pair"),
+  },
+  Slot: enum {
+    Full: { item: str },
+    Empty: {},
+    drop: fn<(inout self)> print("slot"),
+  },
+  take: fn<(sink s: str)> print(s),
+  make: fn<Pair()> Pair { left: Noisy { name: "m" }, right: "r" },
+  main: fn '''
+    let p = Pair { left: Noisy { name: "l" }, right: "r" }
+    let r = p.right
+    let q = Pair { left: Noisy { name: "l" }, right: "r" }
+    take(q.right)
+    let s = Slot.Full { item: "i" }
+    match s:
+      Full(item): take(item)
+      Empty: pass
+    take(make().right)
+    print(make().right)
+    let read = make().right.clone()
+    let n = Noisy { name: "n" }
+    let m = n
+    print(n.name)
+  ''',
+}

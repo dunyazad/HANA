@@ -97,8 +97,14 @@ struct Backend {
     std::unique_ptr<llvm::Module> module;
 };
 
-bool generate_code(const Frontend& frontend, bool optimize, Backend& backend)
+struct GenerateOptions {
+    bool optimize = false;
+    bool sanitize_address = false;
+};
+
+bool generate_code(const Frontend& frontend, const GenerateOptions& generate, Backend& backend)
 {
+    const bool optimize = generate.optimize;
     codegen::CodegenOptions options;
     options.check_overflow = !optimize;
     std::string error;
@@ -117,6 +123,9 @@ bool generate_code(const Frontend& frontend, bool optimize, Backend& backend)
     }
     if (optimize) {
         codegen::optimize_module(*backend.module, *backend.target);
+    }
+    if (generate.sanitize_address) {
+        codegen::instrument_address_sanitizer(*backend.module, *backend.target);
     }
     return true;
 }
@@ -151,7 +160,8 @@ std::string find_runtime_library()
     return {};
 }
 
-bool link_executable(const std::string& object_path, const std::string& output_path)
+bool link_executable(const std::string& object_path, const std::string& output_path,
+                     bool sanitize_address)
 {
     const std::string runtime = find_runtime_library();
     if (runtime.empty()) {
@@ -159,7 +169,11 @@ bool link_executable(const std::string& object_path, const std::string& output_p
         return false;
     }
     const std::string linker = linker_program();
-    const int status = run_process({linker, object_path, runtime, "-o", output_path});
+    std::vector<std::string> command{linker, object_path, runtime, "-o", output_path};
+    if (sanitize_address) {
+        command.push_back("-fsanitize=address");
+    }
+    const int status = run_process(command);
     if (status == -1) {
         tool_error("cannot run the linker '" + linker + "' (set HANA_CC to choose another)");
         return false;
@@ -172,11 +186,11 @@ bool link_executable(const std::string& object_path, const std::string& output_p
     return true;
 }
 
-bool build_executable(const Frontend& frontend, bool optimize, const std::string& object_path,
-                      const std::string& output_path)
+bool build_executable(const Frontend& frontend, const GenerateOptions& generate,
+                      const std::string& object_path, const std::string& output_path)
 {
     Backend backend;
-    if (!generate_code(frontend, optimize, backend)) {
+    if (!generate_code(frontend, generate, backend)) {
         return false;
     }
     std::string error;
@@ -184,7 +198,7 @@ bool build_executable(const Frontend& frontend, bool optimize, const std::string
         tool_error(error);
         return false;
     }
-    return link_executable(object_path, output_path);
+    return link_executable(object_path, output_path, generate.sanitize_address);
 }
 
 std::string default_output_path(const std::string& source_path)
@@ -295,7 +309,7 @@ int run_build(const BuildOptions& options)
     }
     if (options.emit_ir) {
         Backend backend;
-        if (!generate_code(frontend, options.optimize, backend)) {
+        if (!generate_code(frontend, GenerateOptions{options.optimize, options.sanitize_address}, backend)) {
             return kExitToolFailure;
         }
         std::fputs(codegen::module_to_ir_text(*backend.module).c_str(), stdout);
@@ -308,7 +322,7 @@ int run_build(const BuildOptions& options)
     }
     const std::string output = options.output.empty() ? default_output_path(options.path)
                                                       : options.output;
-    if (!build_executable(frontend, options.optimize, temp.file("main.o"), output)) {
+    if (!build_executable(frontend, GenerateOptions{options.optimize, options.sanitize_address}, temp.file("main.o"), output)) {
         return kExitToolFailure;
     }
     return kExitOk;
@@ -330,7 +344,7 @@ int run_program(const RunOptions& options)
         return kExitToolFailure;
     }
     const std::string executable = temp.file("program");
-    if (!build_executable(frontend, options.optimize, temp.file("main.o"), executable)) {
+    if (!build_executable(frontend, GenerateOptions{options.optimize, options.sanitize_address}, temp.file("main.o"), executable)) {
         return kExitToolFailure;
     }
     std::vector<std::string> args{executable};

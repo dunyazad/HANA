@@ -303,10 +303,12 @@ void MoveChecker::consume(const Expr& expr, State& state)
     case ExprKind::Member: {
         use_value(expr, state);
         // Moving a field moves the whole variable it belongs to. A field of
-        // a temporary value can be moved freely.
+        // a temporary value is taken out of it, and the rest is dropped.
         const Expr& root = root_of(expr);
         if (root.kind == ExprKind::Name && static_cast<const NameExpr&>(root).var != nullptr) {
             move_variable(*static_cast<const NameExpr&>(root).var, expr, state);
+        } else if (expr.kind == ExprKind::Member) {
+            check_temporary_member_move(static_cast<const MemberExpr&>(expr));
         }
         return;
     }
@@ -322,12 +324,21 @@ void MoveChecker::consume(const Expr& expr, State& state)
 
 void MoveChecker::move_variable(const VarSymbol& var, const Expr& moved, State& state)
 {
-    if (const VarSymbol* root = alias_of(var)) {
+    if (auto alias = aliases_.find(&var); alias != aliases_.end()) {
         // Moving a name bound by a pattern moves part of the matched variable.
+        std::vector<const Type*> containers = alias->second.containers;
+        const std::vector<const Type*> inner = member_containers(moved);
+        containers.insert(containers.end(), inner.begin(), inner.end());
+        if (check_partial_move(containers, moved)) {
+            return;
+        }
         if (state.reachable) {
             state.moved.emplace(&var, start_location(moved));
         }
-        move_variable(*root, moved, state);
+        move_variable(*alias->second.root, moved, state);
+        return;
+    }
+    if (moved.kind == ExprKind::Member && check_partial_move(member_containers(moved), moved)) {
         return;
     }
     const std::string text = place_text(moved);
@@ -375,14 +386,16 @@ void MoveChecker::walk_match(const MatchExpr& match, bool consuming, State& stat
     after.reachable = false;
     for (const MatchArm& arm : match.arms) {
         State arm_state = fallthrough;
-        std::vector<const VarSymbol*> bindings;
-        collect_bindings(*arm.pattern, bindings);
-        for (const VarSymbol* binding : bindings) {
-            arm_state.moved.erase(binding);
+        std::vector<BoundName> bindings;
+        std::vector<const Type*> containers = member_containers(*match.subject);
+        collect_bound_names(*arm.pattern, result_type(*match.subject), containers, bindings);
+        for (const BoundName& bound : bindings) {
+            arm_state.moved.erase(bound.symbol);
             if (root != nullptr) {
-                aliases_[binding] = root;
+                aliases_[bound.symbol] = Alias{root, bound.containers};
             } else {
-                aliases_.erase(binding);
+                aliases_.erase(bound.symbol);
+                check_owned_binding(bound);
             }
         }
         if (arm.guard) {
@@ -401,6 +414,111 @@ void MoveChecker::walk_match(const MatchExpr& match, bool consuming, State& stat
         merge(after, arm_state);
     }
     state = std::move(after);
+}
+
+// Each name a pattern binds, with the types of the values it lies inside,
+// outermost first.
+void MoveChecker::collect_bound_names(const Pattern& pattern, const Type* type,
+                                      std::vector<const Type*>& containers,
+                                      std::vector<BoundName>& out)
+{
+    switch (pattern.kind) {
+    case PatternKind::Binding:
+        if (pattern.symbol != nullptr) {
+            out.push_back(BoundName{pattern.symbol, containers, &pattern});
+        }
+        return;
+    case PatternKind::Case:
+    case PatternKind::Tuple: {
+        std::vector<const Type*> element_types;
+        if (type->is_option()) {
+            element_types.push_back(type->option_value());
+        } else if (type->is_tuple()) {
+            element_types = type->elements;
+        } else if (type->is_enum() && pattern.case_index >= 0) {
+            for (const FieldInfo& field : type->user->cases[static_cast<std::size_t>(pattern.case_index)].fields) {
+                element_types.push_back(field.type);
+            }
+        }
+        if (element_types.size() != pattern.arguments.size()) {
+            return;
+        }
+        containers.push_back(type);
+        for (std::size_t i = 0; i < element_types.size(); ++i) {
+            collect_bound_names(*pattern.arguments[i], element_types[i], containers, out);
+        }
+        containers.pop_back();
+        return;
+    }
+    default: return;
+    }
+}
+
+// A name bound from a temporary owns its part of the value, which is taken
+// apart; that is not possible when the value has 'drop'.
+void MoveChecker::check_owned_binding(const BoundName& bound)
+{
+    if (is_copy_type(bound.symbol->type)) {
+        return;
+    }
+    for (const Type* container : bound.containers) {
+        if (container->is_user() && container->user->drop_method != nullptr) {
+            error_once(bound.pattern->location,
+                       "cannot take '" + bound.symbol->name + "' out of a temporary value of type '" +
+                           std::string(container->name) + "', because it has 'drop'; store the "
+                           "value in a variable first",
+                       nullptr, {});
+            return;
+        }
+    }
+}
+
+// The types of the values a member path lies inside: [p, p.a] for 'p.a.b'.
+std::vector<const Type*> MoveChecker::member_containers(const Expr& expr)
+{
+    std::vector<const Type*> containers;
+    const Expr* current = &expr;
+    while (current->kind == ExprKind::Member) {
+        current = static_cast<const MemberExpr&>(*current).object.get();
+        containers.insert(containers.begin(), current->type);
+    }
+    return containers;
+}
+
+// Moving part of a value is not possible when a value around it has
+// 'drop': the drop needs the whole value.
+bool MoveChecker::check_partial_move(const std::vector<const Type*>& containers, const Expr& moved)
+{
+    for (const Type* container : containers) {
+        if (container->is_user() && container->user->drop_method != nullptr) {
+            error_once(start_location(moved),
+                       "cannot move '" + place_text(moved) + "' out of a value of type '" +
+                           std::string(container->name) + "', because it has 'drop'; move the "
+                           "whole value instead",
+                       nullptr, {});
+            return true;
+        }
+    }
+    return false;
+}
+
+// A field taken out of a temporary leaves the rest of it to be dropped
+// separately; that is not possible when a value around the field has 'drop'.
+void MoveChecker::check_temporary_member_move(const MemberExpr& moved)
+{
+    if (moved.case_index >= 0) {
+        return;
+    }
+    for (const Type* container : member_containers(moved)) {
+        if (container != nullptr && container->is_user() && container->user->drop_method != nullptr) {
+            error_once(start_location(moved),
+                       "cannot take '" + moved.member + "' out of a temporary value of type '" +
+                           std::string(container->name) + "', because it has 'drop'; store the "
+                           "value in a variable first",
+                       nullptr, {});
+            return;
+        }
+    }
 }
 
 void MoveChecker::collect_bindings(const Pattern& pattern, std::vector<const VarSymbol*>& out)
@@ -427,7 +545,7 @@ const VarSymbol* MoveChecker::root_variable(const Expr& expr) const
 const VarSymbol* MoveChecker::alias_of(const VarSymbol& var) const
 {
     auto it = aliases_.find(&var);
-    return it != aliases_.end() ? it->second : nullptr;
+    return it != aliases_.end() ? it->second.root : nullptr;
 }
 
 // Arguments run left to right. The receiver of a method runs first and is
@@ -436,6 +554,10 @@ void MoveChecker::walk_call(const CallExpr& call, State& state)
 {
     if (call.callee->kind == ExprKind::Member) {
         const auto& callee = static_cast<const MemberExpr&>(*call.callee);
+        if (callee.builtin != BuiltinMethod::None) {
+            use(*callee.object, state); // 'len' and 'clone' read their receiver
+            return;
+        }
         const FunctionSymbol& method = *callee.method;
         if (!callee.is_static_call) {
             if (method.self_convention == ParamConvention::Sink) {

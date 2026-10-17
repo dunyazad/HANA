@@ -39,6 +39,11 @@ std::unique_ptr<llvm::Module> generate_module(llvm::LLVMContext& context,
 // Runs the LLVM optimization pipeline (O2) on the module.
 void optimize_module(llvm::Module& module, llvm::TargetMachine& target);
 
+// Adds AddressSanitizer checks to every function of the module, so memory
+// errors of the generated code are reported when the program runs. The
+// program must be linked with the AddressSanitizer runtime.
+void instrument_address_sanitizer(llvm::Module& module, llvm::TargetMachine& target);
+
 // Writes textual LLVM IR.
 std::string module_to_ir_text(const llvm::Module& module);
 

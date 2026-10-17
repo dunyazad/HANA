@@ -1,0 +1,55 @@
+{
+  Noisy: struct {
+    name: str,
+    drop: fn<(inout self)> print(f"drop {self.name}"),
+  },
+  Holder: struct {
+    item: Noisy,
+    note: Noisy,
+  },
+  Slot: enum {
+    Full: { item: Noisy, extra: Noisy },
+    Empty: {},
+  },
+  make: fn<Noisy(sink name: str)> Noisy { name: name },
+  is_named: fn<bool(n: Noisy, name: str)> n.name == name,
+  slot: fn<Slot(full: bool)> Slot.Full { item: make("item"), extra: make("extra") } if full else Slot.Empty,
+  main: fn '''
+    print("-- discarded")
+    make("discarded")
+    print("-- argument")
+    print(is_named(make("arg"), "arg"))
+    print("-- conditional")
+    let pick = make("then") if is_named(make("cond"), "cond") else make("else")
+    print(pick.name)
+    print("-- logical")
+    print(is_named(make("lhs"), "x") and is_named(make("rhs"), "rhs"))
+    print(is_named(make("lhs2"), "lhs2") or is_named(make("skipped"), "x"))
+    print("-- while condition")
+    var i = 0
+    while is_named(make(f"w{i}"), "w0") or i < 2:
+      i += 1
+    print("-- match on temporary")
+    match slot(true):
+      Full(item, _): print(f"got {item.name}")
+      Empty: print("empty")
+    print("-- match guard")
+    let n = 3
+    match n:
+      k if is_named(make("guard"), "x"): print("never")
+      _: print("fallback")
+    print("-- match value")
+    let kept = match slot(true):
+      Full(item, _): item
+      Empty: make("none")
+    print(kept.name)
+    print("-- member of temporary")
+    print(Holder { item: make("hi"), note: make("hn") }.item.name)
+    let taken = Holder { item: make("ti"), note: make("tn") }.item
+    print(taken.name)
+    print("-- destructuring")
+    let (x, _) = (make("x"), make("y"))
+    print(x.name)
+    print("-- end")
+  ''',
+}

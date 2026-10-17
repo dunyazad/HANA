@@ -1,0 +1,29 @@
+{
+  Noisy: struct {
+    name: str,
+    drop: fn<(inout self)> print(self.name),
+  },
+  BadDrop: struct {
+    id: i32,
+    drop: fn<(self)> print(self.id),
+  },
+  ArgDrop: struct {
+    id: i32,
+    drop: fn<(inout self, n: i32)> print(n),
+  },
+  Plain: struct copy {
+    id: i32,
+    drop: fn<(inout self)> print(self.id),
+  },
+  BadClone: struct {
+    id: i32,
+    clone: fn<i32(self)> self.id,
+  },
+  main: fn '''
+    var n = Noisy { name: "n" }
+    n.drop()
+    let c = n.clone()
+    let t = (Noisy { name: "t" }, 1)
+    let t2 = t.clone()
+  ''',
+}

@@ -1,0 +1,51 @@
+{
+  Person: struct {
+    name: str,
+    age: i32,
+  },
+  join: fn<str(a: str, b: str)> a + ", " + b,
+  shout: fn<str(sink s: str)> '''
+    var out = s
+    out += "!"
+    return out
+  ''',
+  repeat: fn<str(s: str, n: i32)> '''
+    var out = ""
+    for i in 0..n:
+      out += s
+    return out
+  ''',
+  main: fn '''
+    let a = "Hello"
+    let b = "World"
+    print(join(a, b))
+    print(shout(a + " " + b))
+    var c = a.clone()
+    c += c
+    c += c
+    print(c)
+    print(c.len())
+    print("".len())
+    print("\u{D55C}".len())
+    print(repeat("ab", 3))
+    print(repeat("x", 0) == "")
+    print("abc" == "abc")
+    print("abc" != "abd")
+    print("ab" < "abc")
+    print("b" > "abc")
+    print("abc" <= "abc")
+    print("abc" >= "abd")
+    let p = Person { name: f"{a}-{b}", age: 30 }
+    let line = f"{p.name} is {p.age}, ratio {1.5}, ok {true}, char {'Z'}"
+    print(line)
+    let big = repeat("0123456789", 20)
+    print(big.len())
+    var s = ""
+    var i = 0
+    while i < 100:
+      s += f"{i % 10}"
+      i += 1
+    print(s.len())
+    print(f"nested {f"inner {i}"}")
+  ''',
+}

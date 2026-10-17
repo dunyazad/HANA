@@ -64,6 +64,10 @@ private:
     FunctionSymbol& create_function_symbol(FnDecl& function, std::string name);
     void declare_function(FnDecl& function);
     void declare_method(TypeDecl& decl, FnDecl& method);
+    void check_drop_method(const TypeDecl& decl, const FnDecl& method,
+                           const FunctionSymbol& symbol);
+    void check_clone_method(const FnDecl& method, const FunctionSymbol& symbol,
+                            const UserType& info);
     void check_main_signature(const FunctionSymbol& symbol);
     void check_function_body(FnDecl& function);
     void check_body_once(FnDecl& function);
@@ -150,6 +154,9 @@ private:
     const Type* check_method_call(CallExpr& call, MemberExpr& callee);
     const FunctionSymbol* find_static_function(MemberExpr& callee, const UserType& info);
     const FunctionSymbol* find_method(MemberExpr& callee, const Type* receiver);
+    static BuiltinMethod builtin_method(const Type* receiver, const std::string& name);
+    const Type* check_builtin_method_call(CallExpr& call, MemberExpr& callee,
+                                          BuiltinMethod builtin, const Type* receiver);
     std::optional<Place> check_receiver(MemberExpr& callee, const FunctionSymbol& method);
     const Type* check_intrinsic_call(CallExpr& call, const FunctionSymbol& function);
     void check_printable(const Type* type, const SourceLocation& location);
@@ -188,9 +195,6 @@ private:
     std::vector<std::unordered_map<std::string, const VarSymbol*>> scopes_;
     std::vector<LoopContext> loops_;
     const Type* return_type_ = nullptr;
-    // True only while checking the argument of print/write, the one place
-    // where format strings are supported in this stage.
-    bool allow_interpolation_ = false;
 
     std::vector<PendingVar> pending_;
     std::unordered_map<const Stmt*, const Type*> var_types_;

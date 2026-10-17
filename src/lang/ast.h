@@ -273,6 +273,13 @@ struct StructLiteralExpr final : Expr {
     int case_index = -1; // for an enum value
 };
 
+// Methods every value of a type has without declaring them.
+enum class BuiltinMethod {
+    None,
+    StrLen, // 's.len()': the length in bytes
+    Clone,  // 'v.clone()': a copy that owns its own data
+};
+
 // 'object.member': a field, or the callee of a method call.
 struct MemberExpr final : Expr {
     MemberExpr(SourceLocation location_value, ExprPtr object_value, std::string member_value)
@@ -288,6 +295,7 @@ struct MemberExpr final : Expr {
     int case_index = -1;                      // an enum value without fields: 'Color.Red'
     const FunctionSymbol* method = nullptr;   // the callee of a method call
     bool is_static_call = false;              // 'Type.function(...)', no receiver
+    BuiltinMethod builtin = BuiltinMethod::None; // the callee is a built-in method
 };
 
 struct IndexExpr final : Expr {

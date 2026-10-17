@@ -1,0 +1,41 @@
+-- discarded
+drop discarded
+-- argument
+true
+drop arg
+-- conditional
+drop cond
+then
+-- logical
+false
+drop lhs
+true
+drop lhs2
+-- while condition
+drop w0
+drop w1
+drop w2
+-- match on temporary
+drop extra
+got item
+drop item
+-- match guard
+drop guard
+fallback
+-- match value
+drop extra
+item
+-- member of temporary
+hi
+drop hn
+drop hi
+drop tn
+ti
+-- destructuring
+drop y
+x
+-- end
+drop x
+drop ti
+drop item
+drop then

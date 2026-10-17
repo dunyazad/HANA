@@ -16,43 +16,181 @@ namespace hana::codegen {
 
 // Arms are tried in order: the pattern test, then the bindings, then the
 // guard. Semantic analysis guarantees some arm matches. An expression
-// match stores the arm's value in a slot and returns it.
-llvm::Value* CodeGenerator::emit_match(const MatchExpr& match, bool is_expression)
+// match stores the arm's value in a slot and returns it; when it is only
+// read, a second slot tells whether the value is a temporary.
+llvm::Value* CodeGenerator::emit_match(const MatchExpr& match, bool is_expression, Use use)
 {
-    const Type* type = match.subject->type;
-    llvm::Value* subject = emit_subject_address(*match.subject);
+    bool owns_subject = false;
+    llvm::Value* subject = emit_subject_address(*match.subject, owns_subject);
     llvm::AllocaInst* result = is_expression ? create_entry_alloca(match.type, "match") : nullptr;
+    llvm::AllocaInst* result_owned = nullptr;
+    if (is_expression && use == Use::Read && needs_drop(match.type)) {
+        result_owned = create_entry_alloca(bool_type(), "match.owned");
+    }
     auto* end_block = llvm::BasicBlock::Create(context_, "match.end");
     for (const MatchArm& arm : match.arms) {
-        auto* next_block = llvm::BasicBlock::Create(context_, "match.next", current_function_);
-        emit_pattern_test(*arm.pattern, subject, type, next_block);
-        emit_pattern_bindings(*arm.pattern, subject, type);
-        if (arm.guard) {
-            continue_if(emit_expr(*arm.guard), next_block);
-        }
-        if (is_expression) {
-            builder_.CreateStore(emit_expr(*arm.value), result);
-        } else {
-            emit_block(arm.body);
-        }
-        branch_if_open(end_block);
-        builder_.SetInsertPoint(next_block);
+        emit_match_arm(arm, match, is_expression, use, subject, owns_subject, result,
+                       result_owned, end_block);
     }
     builder_.CreateUnreachable();
     end_block->insertInto(current_function_);
     builder_.SetInsertPoint(end_block);
-    return is_expression ? builder_.CreateLoad(llvm_type(match.type), result) : nullptr;
+    if (!is_expression) {
+        return nullptr;
+    }
+    llvm::Value* value = builder_.CreateLoad(llvm_type(match.type), result);
+    if (result_owned == nullptr) {
+        return value;
+    }
+    return keep_temporary(value, match.type,
+                          builder_.CreateLoad(builder_.getInt1Ty(), result_owned));
 }
 
-// A place is matched where it is; a temporary is stored first.
-llvm::Value* CodeGenerator::emit_subject_address(const Expr& subject)
+// One arm. Names bound from a variable are parts of it (aliases); names
+// bound from a temporary own their parts, and the rest of the temporary is
+// dropped when the arm is entered. The arm is a scope for the names it
+// owns.
+void CodeGenerator::emit_match_arm(const MatchArm& arm, const MatchExpr& match, bool is_expression,
+                                   Use use, llvm::Value* subject, bool owns_subject,
+                                   llvm::Value* result, llvm::Value* result_owned,
+                                   llvm::BasicBlock* end_block)
+{
+    const Type* type = result_type(*match.subject);
+    auto* next_block = llvm::BasicBlock::Create(context_, "match.next", current_function_);
+    emit_pattern_test(*arm.pattern, subject, type, next_block);
+    emit_pattern_bindings(*arm.pattern, subject, type);
+    if (place_of(*match.subject)) {
+        record_aliases(*arm.pattern, *match.subject);
+    }
+    if (arm.guard) {
+        begin_full_expression();
+        llvm::Value* condition = emit_value(*arm.guard, Use::Read);
+        end_full_expression();
+        continue_if(condition, next_block);
+    }
+    push_scope();
+    if (owns_subject) {
+        own_pattern_bindings(*arm.pattern);
+        drop_unbound(*arm.pattern, subject, type);
+    }
+    if (is_expression) {
+        begin_full_expression();
+        emit_arm_value(arm, use, result, result_owned, scopes_.back());
+        end_full_expression();
+    } else {
+        emit_block(arm.body);
+    }
+    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+        drop_slots(scopes_.back());
+    }
+    pop_scope();
+    branch_if_open(end_block);
+    builder_.SetInsertPoint(next_block);
+}
+
+// The value of an expression arm. When the match is only read, a place is
+// borrowed, except a name the arm owns: the arm ends here, so its value is
+// handed over instead.
+void CodeGenerator::emit_arm_value(const MatchArm& arm, Use use, llvm::Value* result,
+                                   llvm::Value* result_owned,
+                                   const std::vector<OwnedSlot>& arm_owned)
+{
+    const Expr& value = *arm.value;
+    if (result_owned == nullptr) {
+        builder_.CreateStore(emit_value(value, use), result);
+        return;
+    }
+    bool owned_by_arm = false;
+    if (is_place_expr(value) && value.converted_to == nullptr) {
+        const Expr* root = &value;
+        while (root->kind == ExprKind::Member) {
+            root = static_cast<const MemberExpr&>(*root).object.get();
+        }
+        llvm::Value* address = addresses_.at(static_cast<const NameExpr&>(*root).var);
+        for (const OwnedSlot& slot : arm_owned) {
+            owned_by_arm = owned_by_arm || slot.address == address;
+        }
+    }
+    const bool borrowed = place_of(value).has_value() && !owned_by_arm;
+    builder_.CreateStore(emit_value(value, borrowed ? Use::Read : Use::Consume), result);
+    builder_.CreateStore(builder_.getInt1(!borrowed), result_owned);
+}
+
+// A variable or a field of one is matched where it is. Any other value is
+// stored first; the match owns it when it needs dropping.
+llvm::Value* CodeGenerator::emit_subject_address(const Expr& subject, bool& owns_subject)
 {
     if (place_of(subject)) {
+        owns_subject = false;
         return emit_address(subject);
     }
-    llvm::AllocaInst* temp = create_entry_alloca(result_type(subject), "subject");
-    builder_.CreateStore(emit_expr(subject), temp);
+    const Type* type = result_type(subject);
+    owns_subject = needs_drop(type);
+    llvm::AllocaInst* temp = create_entry_alloca(type, "subject");
+    builder_.CreateStore(emit_value(subject, owns_subject ? Use::Consume : Use::Read), temp);
     return temp;
+}
+
+// Names bound from a matched variable are parts of it.
+void CodeGenerator::record_aliases(const Pattern& pattern, const Expr& subject)
+{
+    std::vector<PathStep> path;
+    const Expr* current = &subject;
+    while (current->kind == ExprKind::Member) {
+        const auto& member = static_cast<const MemberExpr&>(*current);
+        PathStep step;
+        step.kind = PathStep::Kind::Field;
+        step.index = static_cast<unsigned>(member.field_index);
+        path.insert(path.begin(), step);
+        current = member.object.get();
+    }
+    AliasInfo base{static_cast<const NameExpr&>(*current).var, path};
+    std::vector<PathStep> inner;
+    collect_alias_paths(pattern, result_type(subject), inner, base);
+}
+
+void CodeGenerator::collect_alias_paths(const Pattern& pattern, const Type* type,
+                                        std::vector<PathStep>& path, const AliasInfo& base)
+{
+    switch (pattern.kind) {
+    case PatternKind::Binding: {
+        AliasInfo alias = base;
+        alias.path.insert(alias.path.end(), path.begin(), path.end());
+        aliases_[pattern.symbol] = alias;
+        return;
+    }
+    case PatternKind::Tuple:
+        for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+            PathStep step;
+            step.kind = PathStep::Kind::Field;
+            step.index = static_cast<unsigned>(i);
+            path.push_back(step);
+            collect_alias_paths(*pattern.arguments[i], type->elements[i], path, base);
+            path.pop_back();
+        }
+        return;
+    case PatternKind::Case:
+        if (type->is_option()) {
+            PathStep step;
+            step.kind = PathStep::Kind::OptionValue;
+            path.push_back(step);
+            collect_alias_paths(*pattern.arguments.front(), type->option_value(), path, base);
+            path.pop_back();
+            return;
+        }
+        for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+            const EnumCase& entry = type->user->cases[static_cast<std::size_t>(pattern.case_index)];
+            PathStep step;
+            step.kind = PathStep::Kind::CaseField;
+            step.index = static_cast<unsigned>(i);
+            step.case_index = pattern.case_index;
+            path.push_back(step);
+            collect_alias_paths(*pattern.arguments[i], entry.fields[i].type, path, base);
+            path.pop_back();
+        }
+        return;
+    default: return;
+    }
 }
 
 // Branches to 'fail' unless the value at 'address' matches the pattern;
@@ -150,6 +288,18 @@ void CodeGenerator::emit_pattern_bindings(const Pattern& pattern, llvm::Value* a
     for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
         emit_pattern_bindings(*pattern.arguments[i], case_field_address(info, entry, address, i),
                               entry.fields[i].type);
+    }
+}
+
+// The names of a pattern own the parts they are bound to.
+void CodeGenerator::own_pattern_bindings(const Pattern& pattern)
+{
+    if (pattern.kind == PatternKind::Binding) {
+        own_variable(pattern.symbol, addresses_.at(pattern.symbol));
+        return;
+    }
+    for (const auto& argument : pattern.arguments) {
+        own_pattern_bindings(*argument);
     }
 }
 

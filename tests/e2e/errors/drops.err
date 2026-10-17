@@ -1,0 +1,7 @@
+8:5: error: 'drop' must be written 'drop: fn<(inout self)>'
+12:5: error: 'drop' must be written 'drop: fn<(inout self)>'
+16:5: error: 'Plain' is declared 'copy', so it cannot have 'drop'
+20:5: error: 'clone' must be written 'clone: fn<BadClone(self)>'
+24:6: error: 'drop' runs by itself when the value goes out of scope; it cannot be called
+25:14: error: a value of type 'Noisy' cannot be cloned: it has 'drop', or a part that cannot be cloned
+27:15: error: a value of type '(Noisy, i32)' cannot be cloned: it has 'drop', or a part that cannot be cloned

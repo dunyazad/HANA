@@ -410,6 +410,39 @@ void Sema::declare_method(TypeDecl& decl, FnDecl& method)
     FunctionSymbol& symbol = create_function_symbol(method, decl.name + "." + method.name);
     symbol.owner = &info;
     info.methods[method.name] = &symbol;
+    if (method.name == "drop") {
+        check_drop_method(decl, method, symbol);
+        info.drop_method = &symbol;
+    } else if (method.name == "clone") {
+        check_clone_method(method, symbol, info);
+        info.clone_method = &symbol;
+    }
+}
+
+// 'drop: fn<(inout self)>': no other parameters, no result, not on a Copy
+// type (a Copy value is duplicated freely and has nothing to free).
+void Sema::check_drop_method(const TypeDecl& decl, const FnDecl& method,
+                             const FunctionSymbol& symbol)
+{
+    if (symbol.self_convention != ParamConvention::Inout || !symbol.param_types.empty() ||
+        !symbol.return_type->is_void()) {
+        diagnostics_->error(method.location, "'drop' must be written 'drop: fn<(inout self)>'");
+    }
+    if (decl.is_copy) {
+        diagnostics_->error(method.location, "'" + decl.name + "' is declared 'copy', so it cannot "
+                                                              "have 'drop'");
+    }
+}
+
+// 'clone: fn<T(self)>' for the type T it belongs to.
+void Sema::check_clone_method(const FnDecl& method, const FunctionSymbol& symbol,
+                              const UserType& info)
+{
+    if (symbol.self_convention != ParamConvention::Read || !symbol.param_types.empty() ||
+        symbol.return_type != &info.type) {
+        diagnostics_->error(method.location, "'clone' must be written 'clone: fn<" + info.name +
+                                                 "(self)>'");
+    }
 }
 
 void Sema::declare_function(FnDecl& function)
@@ -1025,12 +1058,6 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
     if (!lit.is_format) {
         return str_type();
     }
-    if (!allow_interpolation_) {
-        diagnostics_->error(lit.location, "format strings f\"...\" are only supported directly "
-                                         "inside print() and write() for now");
-    }
-    const bool saved = allow_interpolation_;
-    allow_interpolation_ = false;
     for (auto& part : lit.parts) {
         const Type* type = check_expr(*part, nullptr);
         if (type->is_void()) {
@@ -1039,7 +1066,6 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
             check_printable(type, part->location);
         }
     }
-    allow_interpolation_ = saved;
     return str_type();
 }
 
@@ -1203,6 +1229,8 @@ const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
     const Type* result = operand;
     switch (op) {
     case BinaryOp::Add:
+        valid = operand->is_numeric() || operand->kind == TypeKind::Str;
+        break;
     case BinaryOp::Sub:
     case BinaryOp::Mul:
     case BinaryOp::Div:
@@ -1218,19 +1246,16 @@ const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
         break;
     case BinaryOp::Eq:
     case BinaryOp::Ne:
-        if (operand->kind == TypeKind::Str) {
-            diagnostics_->error(location, "comparing 'str' values is not supported yet");
-            return error_type();
-        }
         valid = operand->is_numeric() || operand->kind == TypeKind::Bool ||
-                operand->kind == TypeKind::Char;
+                operand->kind == TypeKind::Char || operand->kind == TypeKind::Str;
         result = bool_type();
         break;
     case BinaryOp::Lt:
     case BinaryOp::Le:
     case BinaryOp::Gt:
     case BinaryOp::Ge:
-        valid = operand->is_numeric() || operand->kind == TypeKind::Char;
+        valid = operand->is_numeric() || operand->kind == TypeKind::Char ||
+                operand->kind == TypeKind::Str;
         result = bool_type();
         break;
     case BinaryOp::And:
@@ -1480,6 +1505,10 @@ const Type* Sema::check_method_call(CallExpr& call, MemberExpr& callee)
         function = find_static_function(callee, *info);
     } else {
         const Type* object = check_expr(*callee.object, nullptr);
+        if (const BuiltinMethod builtin = builtin_method(object, callee.member);
+            builtin != BuiltinMethod::None) {
+            return check_builtin_method_call(call, callee, builtin, object);
+        }
         function = find_method(callee, object);
         if (function != nullptr) {
             receiver = check_receiver(callee, *function);
@@ -1518,9 +1547,53 @@ const FunctionSymbol* Sema::find_static_function(MemberExpr& callee, const UserT
     return it->second;
 }
 
+// The built-in method a call like 'v.len()' names, unless the type has a
+// method of that name the user wrote.
+BuiltinMethod Sema::builtin_method(const Type* receiver, const std::string& name)
+{
+    if (receiver->is_error() ||
+        (receiver->is_user() && receiver->user->methods.count(name) != 0)) {
+        return BuiltinMethod::None;
+    }
+    if (name == "len" && receiver->kind == TypeKind::Str) {
+        return BuiltinMethod::StrLen;
+    }
+    if (name == "clone" && is_clonable(receiver)) {
+        return BuiltinMethod::Clone;
+    }
+    return BuiltinMethod::None;
+}
+
+// Built-in methods read their receiver and take no arguments.
+const Type* Sema::check_builtin_method_call(CallExpr& call, MemberExpr& callee,
+                                            BuiltinMethod builtin, const Type* receiver)
+{
+    callee.type = void_type();
+    callee.builtin = builtin;
+    if (!call.args.empty()) {
+        diagnostics_->error(call.location, "'" + callee.member + "' takes no arguments");
+        check_args_without_callee(call);
+        return error_type();
+    }
+    return builtin == BuiltinMethod::StrLen ? find_builtin_type("usize") : receiver;
+}
+
 const FunctionSymbol* Sema::find_method(MemberExpr& callee, const Type* receiver)
 {
     if (receiver->is_error()) {
+        return nullptr;
+    }
+    if (callee.member == "drop" && receiver->is_user() && receiver->user->drop_method != nullptr) {
+        diagnostics_->error(callee.location, "'drop' runs by itself when the value goes out of "
+                                             "scope; it cannot be called");
+        return nullptr;
+    }
+    const bool has_user_method =
+        receiver->is_user() && receiver->user->methods.count(callee.member) != 0;
+    if (callee.member == "clone" && !has_user_method) {
+        diagnostics_->error(callee.location, "a value of type " + quoted(receiver) +
+                                                " cannot be cloned: it has 'drop', or a part that "
+                                                "cannot be cloned");
         return nullptr;
     }
     if (!receiver->is_user()) {
@@ -1588,9 +1661,7 @@ const Type* Sema::check_intrinsic_call(CallExpr& call, const FunctionSymbol& fun
         }
         return void_type();
     }
-    allow_interpolation_ = true;
     const Type* type = check_expr(*call.args.front(), nullptr);
-    allow_interpolation_ = false;
     check_printable(type, call.args.front()->location);
     return void_type();
 }

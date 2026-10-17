@@ -25,6 +25,7 @@ void print_usage(std::FILE* out)
                "\n"
                "options:\n"
                "  -O          optimize\n"
+               "  --sanitize=address  (run, build) check memory errors with AddressSanitizer\n"
                "  --tokens    print the token stream\n"
                "  --ast       print the syntax tree\n"
                "  --format json  print diagnostics as JSON on standard output\n"
@@ -99,6 +100,8 @@ bool parse_build(const std::vector<std::string_view>& args, hana::driver::BuildO
         const std::string_view arg = args[i];
         if (arg == "-O") {
             options.optimize = true;
+        } else if (arg == "--sanitize=address") {
+            options.sanitize_address = true;
         } else if (arg == "--emit-ir") {
             options.emit_ir = true;
         } else if (arg == "-o") {
@@ -127,6 +130,8 @@ bool parse_run(const std::vector<std::string_view>& args, hana::driver::RunOptio
         }
         if (arg == "-O") {
             options.optimize = true;
+        } else if (arg == "--sanitize=address") {
+            options.sanitize_address = true;
         } else if (arg.starts_with("-")) {
             return usage_error("unknown option '" + std::string(arg) + "' for 'run'");
         } else if (!take_source_path(arg, options.path)) {

@@ -1,0 +1,6 @@
+20:13: error: cannot move 'p.right' out of a value of type 'Pair', because it has 'drop'; move the whole value instead
+22:10: error: cannot move 'q.right' out of a value of type 'Pair', because it has 'drop'; move the whole value instead
+25:24: error: cannot move 'item' out of a value of type 'Slot', because it has 'drop'; move the whole value instead
+27:14: error: cannot take 'right' out of a temporary value of type 'Pair', because it has 'drop'; store the value in a variable first
+32:11: error: use of moved value 'n'
+31:13: note: 'n' was moved here

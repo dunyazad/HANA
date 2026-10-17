@@ -23,12 +23,14 @@ struct BuildOptions {
     std::string output;   // executable path; derived from the source name if empty
     bool optimize = false;
     bool emit_ir = false; // print LLVM IR instead of linking
+    bool sanitize_address = false; // check memory errors at run time (for testing)
 };
 
 struct RunOptions {
     std::string path;
     std::vector<std::string> program_args;
     bool optimize = false;
+    bool sanitize_address = false; // check memory errors at run time (for testing)
 };
 
 // Exit codes of the hana tool itself.

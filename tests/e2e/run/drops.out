@@ -1,0 +1,39 @@
+-- reverse order
+-- fields after drop
+-- move into function
+consume c
+drop c
+-- returned value
+-- reassignment
+drop e1
+-- temporary
+temp
+drop temp
+-- loop
+body 0
+drop loop0
+drop loop1
+drop loop2
+-- return
+drop early-b
+drop early-a
+1
+drop early-a
+2
+-- enum
+-- option
+drop opt
+-- field move
+drop h2
+after field move
+-- end
+drop h1
+drop opt2
+drop slot
+drop e2
+drop d
+drop pair of l and r
+drop r
+drop l
+drop b
+drop a

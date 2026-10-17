@@ -81,6 +81,8 @@ struct UserType {
     std::vector<FieldInfo> fields;
     std::vector<EnumCase> cases;
     std::unordered_map<std::string, const FunctionSymbol*> methods;
+    const FunctionSymbol* drop_method = nullptr;  // 'drop: fn<(inout self)>'
+    const FunctionSymbol* clone_method = nullptr; // a 'clone' the user wrote
     Type type{TypeKind::Struct, {}};
 
     bool is_enum() const { return type.kind == TypeKind::Enum; }
@@ -101,6 +103,14 @@ struct ComposedType {
 // structs and enums declared with 'copy', and tuples and Options of Copy
 // elements.
 bool is_copy_type(const Type* type);
+
+// True when a value of the type owns something to free when it goes out of
+// scope: a 'str', a type with 'drop', or a value holding one of these.
+bool needs_drop(const Type* type);
+
+// True when '.clone()' works on the type: Copy types, 'str', types with a
+// 'clone' the user wrote, and types without 'drop' whose fields all clone.
+bool is_clonable(const Type* type);
 
 // Looks up a type by its source name ("i32", "bool", ...). Returns null for
 // unknown names.

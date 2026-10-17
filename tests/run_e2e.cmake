@@ -1,14 +1,20 @@
 # Runs one end-to-end test. Inputs: HANA (tool path), SOURCE (.hana file),
-# MODE ("run", "format" or "error"); TEMP_DIR for "format". Optional <name>.flags holds extra 'hana run' options.
+# MODE ("run", "memory", "format" or "error"); TEMP_DIR for "format".
+# Optional <name>.flags holds extra 'hana run' options. "memory" is "run"
+# with the program built under AddressSanitizer, so a use after free, a
+# double free or a leak fails the test.
 get_filename_component(dir ${SOURCE} DIRECTORY)
 get_filename_component(name ${SOURCE} NAME_WE)
 
-if(MODE STREQUAL "run")
+if(MODE STREQUAL "run" OR MODE STREQUAL "memory")
     set(flags "")
     if(EXISTS ${dir}/${name}.flags)
         file(READ ${dir}/${name}.flags flags)
         string(STRIP "${flags}" flags)
         separate_arguments(flags)
+    endif()
+    if(MODE STREQUAL "memory")
+        list(APPEND flags --sanitize=address)
     endif()
     execute_process(COMMAND ${HANA} run ${flags} ${SOURCE}
         OUTPUT_VARIABLE actual ERROR_VARIABLE errors RESULT_VARIABLE status)

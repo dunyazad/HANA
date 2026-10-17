@@ -87,6 +87,83 @@ bool is_copy_type(const Type* type)
     }
 }
 
+bool needs_drop(const Type* type)
+{
+    switch (type->kind) {
+    case TypeKind::Str: return true;
+    case TypeKind::Struct:
+    case TypeKind::Enum: {
+        const UserType& info = *type->user;
+        if (info.drop_method != nullptr) {
+            return true;
+        }
+        for (const FieldInfo& field : info.fields) {
+            if (needs_drop(field.type)) {
+                return true;
+            }
+        }
+        for (const EnumCase& entry : info.cases) {
+            for (const FieldInfo& field : entry.fields) {
+                if (needs_drop(field.type)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    case TypeKind::Tuple:
+    case TypeKind::Option:
+        for (const Type* element : type->elements) {
+            if (needs_drop(element)) {
+                return true;
+            }
+        }
+        return false;
+    default: return false;
+    }
+}
+
+bool is_clonable(const Type* type)
+{
+    if (is_copy_type(type) || type->kind == TypeKind::Str) {
+        return true;
+    }
+    switch (type->kind) {
+    case TypeKind::Struct:
+    case TypeKind::Enum: {
+        const UserType& info = *type->user;
+        if (info.clone_method != nullptr) {
+            return true;
+        }
+        if (info.drop_method != nullptr) {
+            return false;
+        }
+        for (const FieldInfo& field : info.fields) {
+            if (!is_clonable(field.type)) {
+                return false;
+            }
+        }
+        for (const EnumCase& entry : info.cases) {
+            for (const FieldInfo& field : entry.fields) {
+                if (!is_clonable(field.type)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    case TypeKind::Tuple:
+    case TypeKind::Option:
+        for (const Type* element : type->elements) {
+            if (!is_clonable(element)) {
+                return false;
+            }
+        }
+        return true;
+    default: return false;
+    }
+}
+
 unsigned checked_bits(const Type* type)
 {
     return type->is_pointer_sized ? kAssumedPointerBits : type->bits;

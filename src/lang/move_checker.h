@@ -53,7 +53,25 @@ private:
     void walk_for(const ForStmt& stmt, State& state);
     void walk_loop(const Expr* condition, bool infinite, const Block& body, State& state);
     void walk_match(const MatchExpr& match, bool consuming, State& state);
+    // A name bound by a pattern, and the types of the values it lies in.
+    struct BoundName {
+        const VarSymbol* symbol;
+        std::vector<const Type*> containers;
+        const Pattern* pattern;
+    };
+    struct Alias {
+        const VarSymbol* root;
+        std::vector<const Type*> containers;
+    };
+
     static void collect_bindings(const Pattern& pattern, std::vector<const VarSymbol*>& out);
+    static void collect_bound_names(const Pattern& pattern, const Type* type,
+                                    std::vector<const Type*>& containers,
+                                    std::vector<BoundName>& out);
+    void check_owned_binding(const BoundName& bound);
+    static std::vector<const Type*> member_containers(const Expr& expr);
+    bool check_partial_move(const std::vector<const Type*>& containers, const Expr& moved);
+    void check_temporary_member_move(const MemberExpr& moved);
     const VarSymbol* root_variable(const Expr& expr) const;
     const VarSymbol* alias_of(const VarSymbol& var) const;
 
@@ -77,7 +95,7 @@ private:
     std::vector<Loop> loops_;
     // Names bound by a pattern, mapped to the variable of the matched value
     // when that value is a variable or a field of one.
-    std::unordered_map<const VarSymbol*, const VarSymbol*> aliases_;
+    std::unordered_map<const VarSymbol*, Alias> aliases_;
     // Loops are walked until their state settles, so the same error can be
     // found more than once; each location is reported once.
     std::set<std::uint32_t> reported_; // source offsets

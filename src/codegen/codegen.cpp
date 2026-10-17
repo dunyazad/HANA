@@ -27,6 +27,7 @@
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/TargetParser/Host.h>
+#include <llvm/Transforms/Instrumentation/AddressSanitizer.h>
 
 #include "codegen/generator.h"
 #include "lang/sema.h"
@@ -38,6 +39,18 @@ using namespace hana::lang;
 std::string mangle_function_name(const std::string& name)
 {
     return "hana." + name;
+}
+
+bool is_place_expr(const Expr& expr)
+{
+    if (expr.kind == ExprKind::Name) {
+        return static_cast<const NameExpr&>(expr).var != nullptr;
+    }
+    if (expr.kind == ExprKind::Member) {
+        const auto& member = static_cast<const MemberExpr&>(expr);
+        return member.field_index >= 0 && is_place_expr(*member.object);
+    }
+    return false;
 }
 
 bool passed_by_pointer(ParamConvention convention, const Type* type)
@@ -56,9 +69,10 @@ CodeGenerator::CodeGenerator(llvm::LLVMContext& context, llvm::Module& module, c
     , source_path_(std::move(source_path))
     , options_(options)
 {
-    str_type_ = llvm::StructType::create(
-        context_, {llvm::PointerType::get(context_, 0), llvm::Type::getInt64Ty(context_)},
-        "hana.str");
+    // { data, length, capacity }: see hana_str in runtime/hana_rt.h.
+    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+    str_type_ = llvm::StructType::create(context_, {llvm::PointerType::get(context_, 0), i64, i64},
+                                         "hana.str");
 }
 
 void CodeGenerator::generate(const lang::Module& ast)
@@ -82,6 +96,7 @@ void CodeGenerator::generate(const lang::Module& ast)
     if (program_.main != nullptr) {
         emit_c_main();
     }
+    emit_glue_bodies();
 }
 
 // ---------------------------------------------------------------------------
@@ -209,14 +224,23 @@ void CodeGenerator::declare_function(const FnDecl& decl)
 // ---------------------------------------------------------------------------
 // Functions
 
+// Parameters form the outermost scope: a 'sink' parameter is owned by the
+// function and dropped at its end unless it moves out.
 void CodeGenerator::emit_function(const FnDecl& decl)
 {
     llvm::Function* function = functions_.at(decl.symbol);
     current_function_ = function;
     current_return_type_ = decl.symbol->return_type;
+    drop_flags_.clear();
+    aliases_.clear();
     builder_.SetInsertPoint(llvm::BasicBlock::Create(context_, "entry", function));
+    push_scope();
     bind_parameters(decl, *function);
     emit_block(decl.body);
+    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+        drop_slots(scopes_.back());
+    }
+    pop_scope();
     terminate_open_blocks(*function);
     addresses_.clear();
 }
@@ -234,8 +258,8 @@ void CodeGenerator::bind_parameters(const FnDecl& decl, llvm::Function& function
     }
 }
 
-void CodeGenerator::bind_parameter(ParamConvention convention, const VarSymbol* symbol, const std::string& name,
-                                   llvm::Argument& arg)
+void CodeGenerator::bind_parameter(ParamConvention convention, const VarSymbol* symbol,
+                                   const std::string& name, llvm::Argument& arg)
 {
     arg.setName(name);
     if (passed_by_pointer(convention, symbol->type)) {
@@ -245,6 +269,9 @@ void CodeGenerator::bind_parameter(ParamConvention convention, const VarSymbol* 
     llvm::AllocaInst* slot = create_entry_alloca(symbol->type, name);
     builder_.CreateStore(&arg, slot);
     addresses_[symbol] = slot;
+    if (convention == ParamConvention::Sink) {
+        own_variable(symbol, slot);
+    }
 }
 
 // Blocks left open are unreachable or the end of a void function.
@@ -296,12 +323,21 @@ void CodeGenerator::ensure_insertion_point()
 // ---------------------------------------------------------------------------
 // Statements
 
+// A block is a scope: its variables are dropped at its end. Each statement
+// is a full expression: the temporaries it reads are dropped after it.
 void CodeGenerator::emit_block(const Block& block)
 {
+    push_scope();
     for (const auto& statement : block.statements) {
         ensure_insertion_point();
+        begin_full_expression();
         emit_statement(*statement);
+        end_full_expression();
     }
+    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+        drop_slots(scopes_.back());
+    }
+    pop_scope();
 }
 
 void CodeGenerator::emit_statement(const Stmt& stmt)
@@ -309,14 +345,16 @@ void CodeGenerator::emit_statement(const Stmt& stmt)
     switch (stmt.kind) {
     case StmtKind::Let: emit_let(static_cast<const LetStmt&>(stmt)); break;
     case StmtKind::Assign: emit_assign(static_cast<const AssignStmt&>(stmt)); break;
-    case StmtKind::Expr: emit_expr(*static_cast<const ExprStmt&>(stmt).expr); break;
+    case StmtKind::Expr: emit_value(*static_cast<const ExprStmt&>(stmt).expr, Use::Read); break;
     case StmtKind::Return: emit_return(static_cast<const ReturnStmt&>(stmt)); break;
     case StmtKind::If: emit_if(static_cast<const IfStmt&>(stmt)); break;
     case StmtKind::While: emit_while(static_cast<const WhileStmt&>(stmt)); break;
     case StmtKind::For: emit_for(static_cast<const ForStmt&>(stmt)); break;
-    case StmtKind::Match: emit_match(*static_cast<const MatchStmt&>(stmt).match, false); break;
-    case StmtKind::Break: builder_.CreateBr(loops_.back().break_block); break;
-    case StmtKind::Continue: builder_.CreateBr(loops_.back().continue_block); break;
+    case StmtKind::Match:
+        emit_match(*static_cast<const MatchStmt&>(stmt).match, false, Use::Read);
+        break;
+    case StmtKind::Break:
+    case StmtKind::Continue: emit_jump(stmt); break;
     case StmtKind::Pass: break;
     }
 }
@@ -324,41 +362,76 @@ void CodeGenerator::emit_statement(const Stmt& stmt)
 void CodeGenerator::emit_let(const LetStmt& let)
 {
     if (let.pattern) {
-        // 'let (a, b) = value': each name gets its part of the value.
-        llvm::Value* address = emit_subject_address(*let.init);
-        emit_pattern_bindings(*let.pattern, address, let.init->type);
+        emit_destructuring_let(let);
         return;
     }
-    llvm::Value* value = emit_expr(*let.init);
+    llvm::Value* value = emit_value(*let.init, Use::Consume);
     llvm::AllocaInst* slot = create_entry_alloca(let.symbol->type, let.name);
     builder_.CreateStore(value, slot);
     addresses_[let.symbol] = slot;
+    own_variable(let.symbol, slot);
 }
 
+// 'let (a, b) = value': the value moves in, each name owns its part, and
+// the parts matched by '_' are dropped.
+void CodeGenerator::emit_destructuring_let(const LetStmt& let)
+{
+    const Type* type = result_type(*let.init);
+    llvm::AllocaInst* value = create_entry_alloca(type, "destructured");
+    builder_.CreateStore(emit_value(*let.init, Use::Consume), value);
+    emit_pattern_bindings(*let.pattern, value, type);
+    own_pattern_bindings(*let.pattern);
+    drop_unbound(*let.pattern, value, type);
+}
+
+// The new value is computed before the old one is dropped, so 's = s + "!"'
+// reads the old string first.
 void CodeGenerator::emit_assign(const AssignStmt& assign)
 {
-    llvm::Value* address = emit_address(*assign.target);
     const Type* type = assign.target->type;
-    llvm::Value* value = emit_expr(*assign.value);
     if (assign.op) {
+        llvm::Value* value = emit_value(*assign.value, Use::Read);
+        llvm::Value* address = emit_address(*assign.target);
+        if (type->kind == TypeKind::Str) {
+            emit_str_append(address, value);
+            return;
+        }
         llvm::Value* current = builder_.CreateLoad(llvm_type(type), address);
-        value = emit_arithmetic(*assign.op, type, current, value, assign.op_location);
+        builder_.CreateStore(emit_arithmetic(*assign.op, type, current, value, assign.op_location),
+                             address);
+        return;
     }
-    builder_.CreateStore(value, address);
+    llvm::Value* value = emit_value(*assign.value, Use::Consume);
+    store_with_drop(*assign.target, emit_address(*assign.target), value);
 }
 
+// The result moves out first; then everything the function still owns is
+// dropped.
 void CodeGenerator::emit_return(const ReturnStmt& ret)
 {
-    if (ret.value) {
-        builder_.CreateRet(emit_expr(*ret.value));
+    llvm::Value* value = ret.value ? emit_value(*ret.value, Use::Consume) : nullptr;
+    drop_temporaries_from(0);
+    drop_scopes_from(0);
+    if (value != nullptr) {
+        builder_.CreateRet(value);
     } else {
         builder_.CreateRetVoid();
     }
 }
 
+// 'break' and 'continue' leave the scopes and full expressions inside the
+// loop body.
+void CodeGenerator::emit_jump(const Stmt& stmt)
+{
+    const LoopTargets& loop = loops_.back();
+    drop_temporaries_from(loop.temp_depth);
+    drop_scopes_from(loop.scope_depth);
+    builder_.CreateBr(stmt.kind == StmtKind::Break ? loop.break_block : loop.continue_block);
+}
+
 void CodeGenerator::emit_if(const IfStmt& stmt)
 {
-    llvm::Value* condition = emit_expr(*stmt.condition);
+    llvm::Value* condition = emit_value(*stmt.condition, Use::Read);
     auto* then_block = llvm::BasicBlock::Create(context_, "if.then", current_function_);
     auto* merge_block = llvm::BasicBlock::Create(context_, "if.end");
     llvm::BasicBlock* else_block = merge_block;
@@ -380,6 +453,8 @@ void CodeGenerator::emit_if(const IfStmt& stmt)
     builder_.SetInsertPoint(merge_block);
 }
 
+// The condition is its own full expression: it runs again on every
+// iteration, and its temporaries are dropped each time before branching.
 void CodeGenerator::emit_while(const WhileStmt& stmt)
 {
     auto* condition_block = llvm::BasicBlock::Create(context_, "while.cond", current_function_);
@@ -388,10 +463,13 @@ void CodeGenerator::emit_while(const WhileStmt& stmt)
     builder_.CreateBr(condition_block);
 
     builder_.SetInsertPoint(condition_block);
-    builder_.CreateCondBr(emit_expr(*stmt.condition), body_block, end_block);
+    begin_full_expression();
+    llvm::Value* condition = emit_value(*stmt.condition, Use::Read);
+    end_full_expression();
+    builder_.CreateCondBr(condition, body_block, end_block);
 
     builder_.SetInsertPoint(body_block);
-    loops_.push_back(LoopTargets{end_block, condition_block});
+    loops_.push_back(LoopTargets{end_block, condition_block, scopes_.size(), temporaries_.size()});
     emit_block(stmt.body);
     loops_.pop_back();
     branch_if_open(condition_block);
@@ -407,8 +485,8 @@ void CodeGenerator::emit_while(const WhileStmt& stmt)
 void CodeGenerator::emit_for(const ForStmt& stmt)
 {
     const Type* type = stmt.symbol->type;
-    llvm::Value* start = emit_expr(*stmt.start);
-    llvm::Value* end = emit_expr(*stmt.end);
+    llvm::Value* start = emit_value(*stmt.start, Use::Read);
+    llvm::Value* end = emit_value(*stmt.end, Use::Read);
     llvm::AllocaInst* slot = create_entry_alloca(type, stmt.name);
     builder_.CreateStore(start, slot);
     addresses_[stmt.symbol] = slot;
@@ -425,7 +503,7 @@ void CodeGenerator::emit_for(const ForStmt& stmt)
                           end_block);
 
     builder_.SetInsertPoint(body_block);
-    loops_.push_back(LoopTargets{end_block, step_block});
+    loops_.push_back(LoopTargets{end_block, step_block, scopes_.size(), temporaries_.size()});
     emit_block(stmt.body);
     loops_.pop_back();
     branch_if_open(step_block);
@@ -454,12 +532,43 @@ llvm::Value* CodeGenerator::range_has_values(const Type* type, llvm::Value* star
 // ---------------------------------------------------------------------------
 // Expressions
 
-// The value of the expression, wrapped into an Option where semantic
-// analysis decided so ('let a: i32? = 5').
-llvm::Value* CodeGenerator::emit_expr(const Expr& expr)
+// The value of an expression used as 'use' says. A value wrapped into an
+// Option where one is expected becomes a new Option holding it, so a value
+// that is not Copy is taken, like 'Some(value)'.
+llvm::Value* CodeGenerator::emit_value(const Expr& expr, Use use)
 {
+    if (expr.converted_to == nullptr) {
+        return emit_owned_value(expr, use);
+    }
+    const Use inner = is_copy_type(expr.type) ? Use::Read : Use::Consume;
+    llvm::Value* wrapped = emit_some(*expr.converted_to, emit_owned_value(expr, inner));
+    return use == Use::Read ? keep_temporary(wrapped, expr.converted_to, nullptr) : wrapped;
+}
+
+// The value itself, before any wrapping. Reading a variable or a field of
+// one borrows its bits; consuming moves out of it. A new value that is
+// only read becomes a temporary of the full expression.
+llvm::Value* CodeGenerator::emit_owned_value(const Expr& expr, Use use)
+{
+    if (expr.kind == ExprKind::Conditional) {
+        return emit_conditional(static_cast<const ConditionalExpr&>(expr), use);
+    }
+    if (expr.kind == ExprKind::Match) {
+        return emit_match(static_cast<const MatchExpr&>(expr), true, use);
+    }
+    if (!needs_drop(expr.type)) {
+        return emit_expr_value(expr);
+    }
+    if (is_place_expr(expr)) {
+        return use == Use::Consume ? emit_move_out(expr) : emit_expr_value(expr);
+    }
+    if (expr.kind == ExprKind::Member && static_cast<const MemberExpr&>(expr).field_index >= 0) {
+        // A field of a temporary.
+        const auto& member = static_cast<const MemberExpr&>(expr);
+        return use == Use::Consume ? emit_move_out_of_temporary(member) : emit_member(member);
+    }
     llvm::Value* value = emit_expr_value(expr);
-    return expr.converted_to != nullptr ? emit_some(*expr.converted_to, value) : value;
+    return use == Use::Read ? keep_temporary(value, expr.type, nullptr) : value;
 }
 
 llvm::Value* CodeGenerator::emit_some(const Type& option, llvm::Value* value)
@@ -480,8 +589,10 @@ llvm::Value* CodeGenerator::emit_expr_value(const Expr& expr)
         return builder_.getInt1(static_cast<const BoolLiteralExpr&>(expr).value);
     case ExprKind::CharLiteral:
         return builder_.getInt32(static_cast<const CharLiteralExpr&>(expr).value);
-    case ExprKind::StringLiteral:
-        return emit_string_constant(static_cast<const StringLiteralExpr&>(expr).texts.front());
+    case ExprKind::StringLiteral: {
+        const auto& lit = static_cast<const StringLiteralExpr&>(expr);
+        return lit.is_format ? emit_format_string(lit) : emit_string_constant(lit.texts.front());
+    }
     case ExprKind::Name: {
         const auto& name = static_cast<const NameExpr&>(expr);
         return builder_.CreateLoad(llvm_type(expr.type), addresses_.at(name.var), name.name);
@@ -489,13 +600,13 @@ llvm::Value* CodeGenerator::emit_expr_value(const Expr& expr)
     case ExprKind::Unary: return emit_unary(static_cast<const UnaryExpr&>(expr));
     case ExprKind::Binary: return emit_binary(static_cast<const BinaryExpr&>(expr));
     case ExprKind::Conditional:
-        return emit_conditional(static_cast<const ConditionalExpr&>(expr));
+        return emit_conditional(static_cast<const ConditionalExpr&>(expr), Use::Read);
     case ExprKind::Cast: return emit_cast(static_cast<const CastExpr&>(expr));
     case ExprKind::Call: return emit_call(static_cast<const CallExpr&>(expr));
     case ExprKind::StructLiteral:
         return emit_struct_literal(static_cast<const StructLiteralExpr&>(expr));
     case ExprKind::Member: return emit_member(static_cast<const MemberExpr&>(expr));
-    case ExprKind::Match: return emit_match(static_cast<const MatchExpr&>(expr), true);
+    case ExprKind::Match: return emit_match(static_cast<const MatchExpr&>(expr), true, Use::Read);
     case ExprKind::Tuple: return emit_tuple(static_cast<const TupleExpr&>(expr));
     case ExprKind::Null: return llvm::ConstantAggregateZero::get(llvm_type(expr.type));
     case ExprKind::Error:
@@ -517,16 +628,17 @@ llvm::Value* CodeGenerator::emit_address(const Expr& place)
 }
 
 // A field of a place is loaded through its address; a field of a
-// temporary value is extracted from it.
+// temporary value is extracted from it, and the temporary is dropped at
+// the end of the full expression.
 llvm::Value* CodeGenerator::emit_member(const MemberExpr& member)
 {
     if (member.case_index >= 0) {
         return emit_enum_value(*member.type->user, member.case_index, {});
     }
-    if (place_of(member)) {
+    if (is_place_expr(member)) {
         return builder_.CreateLoad(llvm_type(member.type), emit_address(member), member.member);
     }
-    return builder_.CreateExtractValue(emit_expr(*member.object),
+    return builder_.CreateExtractValue(emit_value(*member.object, Use::Read),
                                        static_cast<unsigned>(member.field_index));
 }
 
@@ -546,20 +658,20 @@ llvm::Value* CodeGenerator::emit_struct_literal(const StructLiteralExpr& lit)
 }
 
 // Written fields run in source order, then the defaults of the fields
-// left out, in declaration order. Returns the values in declaration
-// order.
+// left out, in declaration order. The new value owns them all. Returns the
+// values in declaration order.
 std::vector<llvm::Value*> CodeGenerator::emit_literal_fields(const StructLiteralExpr& lit,
                                                              const std::vector<FieldInfo>& fields)
 {
     std::vector<llvm::Value*> written;
     for (const auto& field : lit.fields) {
-        written.push_back(emit_expr(*field.value));
+        written.push_back(emit_value(*field.value, Use::Consume));
     }
     std::vector<llvm::Value*> values;
     for (std::size_t i = 0; i < fields.size(); ++i) {
         const int index = lit.field_order[i];
         values.push_back(index >= 0 ? written[static_cast<std::size_t>(index)]
-                                    : emit_expr(*fields[i].default_value));
+                                    : emit_value(*fields[i].default_value, Use::Consume));
     }
     return values;
 }
@@ -586,27 +698,29 @@ llvm::Value* CodeGenerator::emit_tuple(const TupleExpr& tuple)
 {
     llvm::Value* value = llvm::PoisonValue::get(llvm_type(tuple.type));
     for (std::size_t i = 0; i < tuple.elements.size(); ++i) {
-        value = builder_.CreateInsertValue(value, emit_expr(*tuple.elements[i]),
+        value = builder_.CreateInsertValue(value, emit_value(*tuple.elements[i], Use::Consume),
                                            static_cast<unsigned>(i));
     }
     return value;
 }
 
 // An argument passed by pointer: a place passes its own address, any
-// other value is stored in a temporary first.
+// other value is stored in a slot first.
 llvm::Value* CodeGenerator::emit_pointer_argument(const Expr& arg)
 {
     if (place_of(arg)) {
         return emit_address(arg);
     }
     llvm::AllocaInst* temp = create_entry_alloca(result_type(arg), "arg");
-    builder_.CreateStore(emit_expr(arg), temp);
+    builder_.CreateStore(emit_value(arg, Use::Read), temp);
     return temp;
 }
 
 // How the argument is passed follows the parameter's type: the argument
-// may be a value wrapped into the parameter's Option type.
-llvm::Value* CodeGenerator::emit_argument(ParamConvention convention, const Type* param_type, const Expr& arg)
+// may be a value wrapped into the parameter's Option type. A 'sink'
+// argument moves into the call.
+llvm::Value* CodeGenerator::emit_argument(ParamConvention convention, const Type* param_type,
+                                          const Expr& arg)
 {
     if (convention == ParamConvention::Inout) {
         return emit_address(*static_cast<const UnaryExpr&>(arg).operand);
@@ -614,7 +728,7 @@ llvm::Value* CodeGenerator::emit_argument(ParamConvention convention, const Type
     if (passed_by_pointer(convention, param_type)) {
         return emit_pointer_argument(arg);
     }
-    return emit_expr(arg);
+    return emit_value(arg, convention == ParamConvention::Sink ? Use::Consume : Use::Read);
 }
 
 // The value a method is called on; for 'inout self' it is a place
@@ -627,7 +741,7 @@ llvm::Value* CodeGenerator::emit_receiver(ParamConvention convention, const Expr
     if (passed_by_pointer(convention, object.type)) {
         return emit_pointer_argument(object);
     }
-    return emit_expr(object);
+    return emit_value(object, convention == ParamConvention::Sink ? Use::Consume : Use::Read);
 }
 
 llvm::Value* CodeGenerator::emit_int_literal(const IntLiteralExpr& lit)
@@ -638,16 +752,18 @@ llvm::Value* CodeGenerator::emit_int_literal(const IntLiteralExpr& lit)
     return llvm::ConstantInt::get(llvm_type(lit.type), lit.value);
 }
 
+// A literal's bytes are not owned: its capacity is 0.
 llvm::Constant* CodeGenerator::emit_string_constant(const std::string& text)
 {
     llvm::Constant* data = builder_.CreateGlobalStringPtr(text, "str", 0, &module_);
     return llvm::ConstantStruct::get(
-        str_type_, {data, builder_.getInt64(static_cast<std::uint64_t>(text.size()))});
+        str_type_, {data, builder_.getInt64(static_cast<std::uint64_t>(text.size())),
+                    builder_.getInt64(0)});
 }
 
 llvm::Value* CodeGenerator::emit_unary(const UnaryExpr& unary)
 {
-    llvm::Value* operand = emit_expr(*unary.operand);
+    llvm::Value* operand = emit_value(*unary.operand, Use::Read);
     switch (unary.op) {
     case UnaryOp::Neg:
         if (unary.type->is_float()) {
@@ -671,17 +787,24 @@ llvm::Value* CodeGenerator::emit_binary(const BinaryExpr& binary)
     if (result_type(*binary.lhs)->is_option()) {
         return emit_null_comparison(binary);
     }
-    llvm::Value* lhs = emit_expr(*binary.lhs);
-    llvm::Value* rhs = emit_expr(*binary.rhs);
+    llvm::Value* lhs = emit_value(*binary.lhs, Use::Read);
+    llvm::Value* rhs = emit_value(*binary.rhs, Use::Read);
     const Type* operand_type = binary.lhs->type;
+    const bool is_str = operand_type->kind == TypeKind::Str;
     switch (binary.op) {
     case BinaryOp::Eq:
     case BinaryOp::Ne:
     case BinaryOp::Lt:
     case BinaryOp::Le:
     case BinaryOp::Gt:
-    case BinaryOp::Ge: return emit_comparison(binary.op, operand_type, lhs, rhs);
-    default: return emit_arithmetic(binary.op, operand_type, lhs, rhs, binary.op_location);
+    case BinaryOp::Ge:
+        return is_str ? emit_str_compare(binary.op, lhs, rhs)
+                      : emit_comparison(binary.op, operand_type, lhs, rhs);
+    default:
+        if (is_str) {
+            return emit_str_concat(lhs, rhs);
+        }
+        return emit_arithmetic(binary.op, operand_type, lhs, rhs, binary.op_location);
     }
 }
 
@@ -690,15 +813,16 @@ llvm::Value* CodeGenerator::emit_binary(const BinaryExpr& binary)
 llvm::Value* CodeGenerator::emit_null_comparison(const BinaryExpr& binary)
 {
     const Expr& option = binary.lhs->kind == ExprKind::Null ? *binary.rhs : *binary.lhs;
-    llvm::Value* has_value = builder_.CreateExtractValue(emit_expr(option), 0);
+    llvm::Value* has_value = builder_.CreateExtractValue(emit_value(option, Use::Read), 0);
     return binary.op == BinaryOp::Eq ? builder_.CreateNot(has_value) : has_value;
 }
 
+// Short-circuit: the right side runs only when it decides the result, so
+// it is a full expression of its own.
 llvm::Value* CodeGenerator::emit_logical(const BinaryExpr& binary)
 {
-    // Short-circuit: the right side runs only when it decides the result.
     const bool is_and = binary.op == BinaryOp::And;
-    llvm::Value* lhs = emit_expr(*binary.lhs);
+    llvm::Value* lhs = emit_value(*binary.lhs, Use::Read);
     llvm::BasicBlock* lhs_block = builder_.GetInsertBlock();
     auto* rhs_block = llvm::BasicBlock::Create(context_, is_and ? "and.rhs" : "or.rhs",
                                                current_function_);
@@ -710,7 +834,9 @@ llvm::Value* CodeGenerator::emit_logical(const BinaryExpr& binary)
         builder_.CreateCondBr(lhs, end_block, rhs_block);
     }
     builder_.SetInsertPoint(rhs_block);
-    llvm::Value* rhs = emit_expr(*binary.rhs);
+    begin_full_expression();
+    llvm::Value* rhs = emit_value(*binary.rhs, Use::Read);
+    end_full_expression();
     llvm::BasicBlock* rhs_end = builder_.GetInsertBlock();
     builder_.CreateBr(end_block);
 
@@ -814,22 +940,26 @@ llvm::Value* CodeGenerator::emit_overflow_checked(BinaryOp op, const Type* type,
     return builder_.CreateExtractValue(result, 0);
 }
 
-// 'a if cond else b': only the chosen branch runs.
-llvm::Value* CodeGenerator::emit_conditional(const ConditionalExpr& cond)
+// 'a if cond else b': only the chosen branch runs, as a full expression of
+// its own. When the result is only read, it is a temporary on the branches
+// that made a new value and borrowed on the branches that read a place.
+llvm::Value* CodeGenerator::emit_conditional(const ConditionalExpr& cond, Use use)
 {
-    llvm::Value* condition = emit_expr(*cond.condition);
+    llvm::Value* condition = emit_value(*cond.condition, Use::Read);
     auto* then_block = llvm::BasicBlock::Create(context_, "cond.then", current_function_);
     auto* else_block = llvm::BasicBlock::Create(context_, "cond.else", current_function_);
     auto* end_block = llvm::BasicBlock::Create(context_, "cond.end", current_function_);
     builder_.CreateCondBr(condition, then_block, else_block);
 
     builder_.SetInsertPoint(then_block);
-    llvm::Value* then_value = emit_expr(*cond.then_value);
+    llvm::Value* then_owned = nullptr;
+    llvm::Value* then_value = emit_branch_value(*cond.then_value, use, then_owned);
     llvm::BasicBlock* then_end = builder_.GetInsertBlock();
     builder_.CreateBr(end_block);
 
     builder_.SetInsertPoint(else_block);
-    llvm::Value* else_value = emit_expr(*cond.else_value);
+    llvm::Value* else_owned = nullptr;
+    llvm::Value* else_value = emit_branch_value(*cond.else_value, use, else_owned);
     llvm::BasicBlock* else_end = builder_.GetInsertBlock();
     builder_.CreateBr(end_block);
 
@@ -838,14 +968,36 @@ llvm::Value* CodeGenerator::emit_conditional(const ConditionalExpr& cond)
     llvm::PHINode* phi = builder_.CreatePHI(llvm_type(cond.type), 2);
     phi->addIncoming(then_value, then_end);
     phi->addIncoming(else_value, else_end);
-    return phi;
+    if (use == Use::Consume || !needs_drop(cond.type)) {
+        return phi;
+    }
+    llvm::PHINode* owned = builder_.CreatePHI(builder_.getInt1Ty(), 2);
+    owned->addIncoming(then_owned, then_end);
+    owned->addIncoming(else_owned, else_end);
+    return keep_temporary(phi, cond.type, owned);
 }
 
-// Integer widths change by sign or zero extension or truncation. Float to
-// integer saturates (NaN becomes 0), so no conversion is undefined.
+// One branch of a conditional value. When the value is only read, a place
+// is borrowed and anything else is a new value the branch hands over;
+// 'owned' tells which.
+llvm::Value* CodeGenerator::emit_branch_value(const Expr& expr, Use use, llvm::Value*& owned)
+{
+    begin_full_expression();
+    llvm::Value* value = nullptr;
+    const bool borrowed = use == Use::Read && place_of(expr).has_value();
+    if (borrowed || !needs_drop(result_type(expr))) {
+        value = emit_value(expr, Use::Read);
+    } else {
+        value = emit_value(expr, Use::Consume);
+    }
+    owned = builder_.getInt1(!borrowed);
+    end_full_expression();
+    return value;
+}
+
 llvm::Value* CodeGenerator::emit_cast(const CastExpr& cast)
 {
-    llvm::Value* value = emit_expr(*cast.operand);
+    llvm::Value* value = emit_value(*cast.operand, Use::Read);
     const Type* source = cast.operand->type;
     const Type* target = cast.type;
     llvm::Type* target_type = llvm_type(target);
@@ -910,6 +1062,9 @@ llvm::Value* CodeGenerator::emit_call(const CallExpr& call)
     const FunctionSymbol* symbol = nullptr;
     if (call.callee->kind == ExprKind::Member) {
         const auto& callee = static_cast<const MemberExpr&>(*call.callee);
+        if (callee.builtin != BuiltinMethod::None) {
+            return emit_builtin_method(call, callee);
+        }
         symbol = callee.method;
         if (!callee.is_static_call) {
             args.push_back(emit_receiver(*symbol->self_convention, *callee.object));
@@ -917,7 +1072,7 @@ llvm::Value* CodeGenerator::emit_call(const CallExpr& call)
     } else {
         symbol = static_cast<const NameExpr&>(*call.callee).function;
         if (symbol->intrinsic == Intrinsic::Some) {
-            return emit_some(*call.type, emit_expr(*call.args.front()));
+            return emit_some(*call.type, emit_value(*call.args.front(), Use::Consume));
         }
         if (symbol->intrinsic != Intrinsic::None) {
             emit_print(*call.args.front(), symbol->intrinsic == Intrinsic::Print);
@@ -929,6 +1084,18 @@ llvm::Value* CodeGenerator::emit_call(const CallExpr& call)
             emit_argument(symbol->conventions[i], symbol->param_types[i], *call.args[i]));
     }
     return builder_.CreateCall(functions_.at(symbol), args);
+}
+
+// 's.len()' and 'v.clone()' read their receiver.
+llvm::Value* CodeGenerator::emit_builtin_method(const CallExpr& call, const MemberExpr& callee)
+{
+    const Expr& object = *callee.object;
+    if (callee.builtin == BuiltinMethod::StrLen) {
+        llvm::Value* length = builder_.CreateExtractValue(emit_value(object, Use::Read), 1);
+        return builder_.CreateIntCast(length, llvm_type(call.type), false);
+    }
+    llvm::Value* address = place_of(object) ? emit_address(object) : emit_pointer_argument(object);
+    return emit_clone(address, result_type(object));
 }
 
 // ---------------------------------------------------------------------------
@@ -966,7 +1133,7 @@ void CodeGenerator::emit_print_text(const std::string& text)
 
 void CodeGenerator::emit_print_value(const Expr& expr)
 {
-    llvm::Value* value = emit_expr(expr);
+    llvm::Value* value = emit_value(expr, Use::Read);
     const Type* type = expr.type;
     switch (type->kind) {
     case TypeKind::Int:
@@ -1001,24 +1168,45 @@ void CodeGenerator::emit_print_value(const Expr& expr)
 // ---------------------------------------------------------------------------
 // Runtime support (runtime/hana_rt.h)
 
+// Declares a function of runtime/hana_rt.h with the signature the code
+// generator uses for it.
 llvm::FunctionCallee CodeGenerator::runtime_function(const std::string& name)
 {
     llvm::Type* ptr = llvm::PointerType::get(context_, 0);
     llvm::Type* i64 = builder_.getInt64Ty();
+    llvm::Type* i32 = builder_.getInt32Ty();
     llvm::Type* void_type = builder_.getVoidTy();
+    struct Signature {
+        const char* name;
+        llvm::Type* result;
+        std::vector<llvm::Type*> params;
+    };
+    const Signature signatures[] = {
+        {"hana_rt_print_str", void_type, {ptr, i64}},
+        {"hana_rt_panic", void_type, {ptr, i64}},
+        {"hana_rt_print_i64", void_type, {i64}},
+        {"hana_rt_print_u64", void_type, {i64}},
+        {"hana_rt_print_f64", void_type, {builder_.getDoubleTy()}},
+        {"hana_rt_print_f32", void_type, {builder_.getFloatTy()}},
+        {"hana_rt_print_bool", void_type, {builder_.getInt1Ty()}},
+        {"hana_rt_print_char", void_type, {i32}},
+        {"hana_rt_str_push", void_type, {ptr, ptr, i64}},
+        {"hana_rt_str_push_i64", void_type, {ptr, i64}},
+        {"hana_rt_str_push_u64", void_type, {ptr, i64}},
+        {"hana_rt_str_push_f64", void_type, {ptr, builder_.getDoubleTy()}},
+        {"hana_rt_str_push_f32", void_type, {ptr, builder_.getFloatTy()}},
+        {"hana_rt_str_push_bool", void_type, {ptr, builder_.getInt1Ty()}},
+        {"hana_rt_str_push_char", void_type, {ptr, i32}},
+        {"hana_rt_str_concat", void_type, {ptr, ptr, i64, ptr, i64}},
+        {"hana_rt_str_clone", void_type, {ptr, ptr, i64}},
+        {"hana_rt_str_compare", i32, {ptr, i64, ptr, i64}},
+        {"hana_rt_str_free", void_type, {ptr, i64}},
+    };
     llvm::FunctionType* type = nullptr;
-    if (name == "hana_rt_print_str" || name == "hana_rt_panic") {
-        type = llvm::FunctionType::get(void_type, {ptr, i64}, false);
-    } else if (name == "hana_rt_print_i64" || name == "hana_rt_print_u64") {
-        type = llvm::FunctionType::get(void_type, {i64}, false);
-    } else if (name == "hana_rt_print_f64") {
-        type = llvm::FunctionType::get(void_type, {builder_.getDoubleTy()}, false);
-    } else if (name == "hana_rt_print_f32") {
-        type = llvm::FunctionType::get(void_type, {builder_.getFloatTy()}, false);
-    } else if (name == "hana_rt_print_bool") {
-        type = llvm::FunctionType::get(void_type, {builder_.getInt1Ty()}, false);
-    } else {
-        type = llvm::FunctionType::get(void_type, {builder_.getInt32Ty()}, false);
+    for (const Signature& signature : signatures) {
+        if (name == signature.name) {
+            type = llvm::FunctionType::get(signature.result, signature.params, false);
+        }
     }
     llvm::FunctionCallee callee = module_.getOrInsertFunction(name, type);
     if (name == "hana_rt_panic") {
@@ -1089,7 +1277,11 @@ std::unique_ptr<llvm::Module> generate_module(llvm::LLVMContext& context,
     return llvm_module;
 }
 
-void optimize_module(llvm::Module& module, llvm::TargetMachine& target)
+namespace {
+
+// Runs the module passes 'make_passes' builds, with the analyses they need.
+template <typename MakePasses>
+void run_module_passes(llvm::Module& module, llvm::TargetMachine& target, MakePasses make_passes)
 {
     llvm::LoopAnalysisManager loop_analyses;
     llvm::FunctionAnalysisManager function_analyses;
@@ -1102,9 +1294,31 @@ void optimize_module(llvm::Module& module, llvm::TargetMachine& target)
     builder.registerLoopAnalyses(loop_analyses);
     builder.crossRegisterProxies(loop_analyses, function_analyses, cgscc_analyses,
                                  module_analyses);
-    llvm::ModulePassManager passes =
-        builder.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+    llvm::ModulePassManager passes = make_passes(builder);
     passes.run(module, module_analyses);
+}
+
+} // namespace
+
+void optimize_module(llvm::Module& module, llvm::TargetMachine& target)
+{
+    run_module_passes(module, target, [](llvm::PassBuilder& builder) {
+        return builder.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+    });
+}
+
+void instrument_address_sanitizer(llvm::Module& module, llvm::TargetMachine& target)
+{
+    for (llvm::Function& function : module) {
+        if (!function.isDeclaration()) {
+            function.addFnAttr(llvm::Attribute::SanitizeAddress);
+        }
+    }
+    run_module_passes(module, target, [](llvm::PassBuilder&) {
+        llvm::ModulePassManager passes;
+        passes.addPass(llvm::AddressSanitizerPass(llvm::AddressSanitizerOptions{}));
+        return passes;
+    });
 }
 
 std::string module_to_ir_text(const llvm::Module& module)

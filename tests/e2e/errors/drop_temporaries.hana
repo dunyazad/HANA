@@ -1,0 +1,14 @@
+{
+  Slot: enum {
+    Full: { item: str },
+    Empty: {},
+    drop: fn<(inout self)> print("slot"),
+  },
+  take: fn<(sink s: str)> print(s),
+  make: fn<Slot()> Slot.Full { item: "i" },
+  main: fn '''
+    match make():
+      Full(item): take(item)
+      Empty: pass
+  ''',
+}

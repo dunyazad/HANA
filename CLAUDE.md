@@ -42,7 +42,7 @@ hana/
   src/
     support/   SourceLocation, 진단 메시지(DiagnosticEngine), UTF-8
     lang/      OuterParser(JSON 층), CodeLexer/CodeParser(''' 코드), AST, Type, Symbol, Sema(+ sema_match), MoveChecker, Formatter (hana::lang)
-    codegen/   LLVM IR 생성, 최적화, 오브젝트 파일 출력 (hana::codegen)
+    codegen/   LLVM IR 생성(generator.h, codegen: 식/문장, codegen_match: match, codegen_memory: 소유/해제/clone/str), 최적화, AddressSanitizer 계측, 오브젝트 파일 출력 (hana::codegen)
     driver/    check / fmt / build / run 파이프라인, 링커 호출 (hana::driver)
     cli/       hana 실행 파일
   runtime/     컴파일된 프로그램에 링크되는 C 런타임 (출력, panic)
@@ -51,6 +51,7 @@ hana/
     unit/        OuterParser/CodeLexer/CodeParser/Sema 단위 테스트
     e2e/run/     <이름>.hana 를 실행해 .out(표준 출력), .status(종료 코드), .stderr(포함 문구), .flags(hana run 옵션) 확인
     e2e/errors/  <이름>.hana 의 진단 메시지가 <이름>.err 의 각 줄을 포함하는지 확인
+    (memory.*)   e2e/run 파일을 --sanitize=address 로 다시 실행 (해제 후 사용, 두 번 해제, 누수 검사)
     (format.*)   e2e/run 파일을 hana fmt 한 결과가 다시 포맷해도 같고, 실행 결과가 같은지 확인
     (formatted.example.*) examples/ 가 표준 배치인지 확인
 ```
@@ -65,6 +66,7 @@ cmake --build build
 ctest --test-dir build
 ./build/hana run examples/fib.hana
 ./build/hana run -O examples/fib.hana
+./build/hana run --sanitize=address examples/fib.hana
 ./build/hana check --tokens --ast examples/fib.hana
 ./build/hana check --format json examples/fib.hana
 ./build/hana fmt --check examples/fib.hana

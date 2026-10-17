@@ -22,6 +22,23 @@ foreach(source ${HANA_RUN_TESTS})
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e.cmake)
 endforeach()
 
+# The same programs again under AddressSanitizer, when the C compiler used
+# for linking can link with it.
+include(CheckCSourceCompiles)
+set(CMAKE_REQUIRED_FLAGS -fsanitize=address)
+set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=address)
+check_c_source_compiles("int main(void) { return 0; }" HANA_HAVE_ADDRESS_SANITIZER)
+unset(CMAKE_REQUIRED_FLAGS)
+unset(CMAKE_REQUIRED_LINK_OPTIONS)
+if(HANA_HAVE_ADDRESS_SANITIZER)
+    foreach(source ${HANA_RUN_TESTS})
+        get_filename_component(name ${source} NAME_WE)
+        add_test(NAME memory.${name}
+            COMMAND ${CMAKE_COMMAND} -DHANA=$<TARGET_FILE:hana> -DSOURCE=${source} -DMODE=memory
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e.cmake)
+    endforeach()
+endif()
+
 foreach(source ${HANA_RUN_TESTS})
     get_filename_component(name ${source} NAME_WE)
     add_test(NAME format.${name}
