@@ -1,0 +1,2 @@
+for_moves.hana:7:11: error: use of moved value 'p'
+for_moves.hana:7:11: note: 'p' was moved here in the previous iteration of the loop

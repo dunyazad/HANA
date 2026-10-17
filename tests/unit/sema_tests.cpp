@@ -433,3 +433,27 @@ TEST(sema_match_binding_is_part_of_subject)
                  ", f: fn<(sink m: M)> '''\n  match m:\n    T(s):\n      eat_m(m)\n      print(s)\n    Q: pass\n''' }")
                ->has_error("use of 's' after 'm' was moved"));
 }
+
+TEST(sema_for_range_types)
+{
+    EXPECT(!check("{ f: fn<(n: u64)> '''\n  for i in 0..n:\n    pass\n''' }")->diagnostics.has_errors());
+    EXPECT(check("{ f: fn<(a: i64, b: i32)> '''\n  for i in a..b:\n    pass\n''' }")
+               ->has_error("different types"));
+    EXPECT(check("{ f: fn '''\n  for i in 0.0..1.0:\n    pass\n''' }")->has_error("integer bounds"));
+    EXPECT(check("{ f: fn '''\n  for i in 0..3:\n    i = 1\n''' }")->has_error("'for' loop cannot be changed"));
+}
+
+TEST(sema_for_variable_is_inferred_from_use)
+{
+    auto r = check("{ take: fn<(x: i64)> pass, f: fn '''\n  for i in 0..3:\n    take(i)\n''' }");
+    EXPECT(!r->diagnostics.has_errors());
+    const auto& loop = static_cast<const ForStmt&>(*r->module->functions[1]->body.statements[0]);
+    EXPECT(loop.symbol->type->name == "i64");
+}
+
+TEST(sema_for_moves_repeat)
+{
+    EXPECT(check("{ P: struct { s: str }, eat: fn<(sink p: P)> pass, f: fn '''\n"
+                 "  let p = P { s: \"a\" }\n  for i in 0..2:\n    eat(p)\n''' }")
+               ->has_error("use of moved value 'p'"));
+}

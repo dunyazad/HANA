@@ -69,8 +69,8 @@ private:
     // Literal variable inference ('var i = 0' takes the type of its first
     // typed use, see docs/language.md)
     void infer_literal_variables(FnDecl& function);
-    void collect_pending_lets(Block& block);
-    const Type* literal_variable_type(const LetStmt& let);
+    void collect_pending_vars(Block& block);
+    const Type* literal_variable_type(const Stmt& stmt);
     bool bind(const Type* placeholder, const Type* concrete);
     const Type* unify(const Type* a, const Type* b);
     const Type* resolve_type(const TypeExpr& type);
@@ -84,6 +84,8 @@ private:
     bool check_return(ReturnStmt& ret);
     bool check_if(IfStmt& stmt);
     bool check_while(WhileStmt& stmt);
+    bool check_for(ForStmt& stmt);
+    const Type* check_range_bounds(ForStmt& stmt);
 
     // match (sema_match.cpp)
     bool check_match_statement(MatchStmt& stmt);
@@ -141,14 +143,15 @@ private:
     // Scopes
     void push_scope();
     void pop_scope();
-    const VarSymbol* declare_var(const std::string& name, const Type* type, VarKind kind,
-                                 bool is_mutable, const SourceLocation& location);
+    VarSymbol* declare_var(const std::string& name, const Type* type, VarKind kind,
+                           bool is_mutable, const SourceLocation& location);
     const VarSymbol* lookup_var(const std::string& name) const;
     const FunctionSymbol* lookup_function(const std::string& name) const;
     UserType* lookup_type(const std::string& name) const;
 
-    struct PendingLet {
-        const LetStmt* let;
+    // A 'let' or 'for' whose variable takes its type from its first use.
+    struct PendingVar {
+        const Stmt* stmt;
         bool is_float;
     };
 
@@ -164,10 +167,10 @@ private:
     // where format strings are supported in this stage.
     bool allow_interpolation_ = false;
 
-    std::vector<PendingLet> pending_;
-    std::unordered_map<const LetStmt*, const Type*> let_types_;
-    std::unordered_map<const LetStmt*, const Type*> let_placeholders_;
-    std::unordered_map<const Type*, const LetStmt*> placeholder_lets_;
+    std::vector<PendingVar> pending_;
+    std::unordered_map<const Stmt*, const Type*> var_types_;
+    std::unordered_map<const Stmt*, const Type*> var_placeholders_;
+    std::unordered_map<const Type*, const Stmt*> placeholder_vars_;
     std::deque<Type> placeholder_storage_;
     bool inferring_ = false;
     bool bound_new_ = false;

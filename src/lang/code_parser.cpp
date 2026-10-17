@@ -200,9 +200,7 @@ StmtPtr CodeParser::parse_statement()
     switch (peek().kind) {
     case TokenKind::KwIf: return parse_if();
     case TokenKind::KwWhile: return parse_while();
-    case TokenKind::KwFor:
-        error_at(peek(), "'for' loops are not supported yet");
-        return nullptr;
+    case TokenKind::KwFor: return parse_for();
     case TokenKind::KwMatch: {
         std::unique_ptr<MatchExpr> match = parse_match(false);
         if (!match) {
@@ -235,6 +233,7 @@ StmtPtr CodeParser::parse_simple_statement()
     case TokenKind::KwPass: return std::make_unique<SimpleStmt>(StmtKind::Pass, advance().location);
     case TokenKind::KwIf:
     case TokenKind::KwWhile:
+    case TokenKind::KwFor:
         error_at(peek(), "'" + peek().text + "' must start its own line");
         return nullptr;
     default: return parse_expression_statement();
@@ -308,6 +307,35 @@ StmtPtr CodeParser::parse_while()
 {
     auto stmt = std::make_unique<WhileStmt>(advance().location);
     stmt->condition = parse_expression();
+    if (!parse_suite(stmt->body)) {
+        return nullptr;
+    }
+    return stmt;
+}
+
+// 'for' name 'in' start ('..' | '..=') end suite. The bounds are binary
+// expressions, so '0..n + 1' runs to n + 1.
+StmtPtr CodeParser::parse_for()
+{
+    auto stmt = std::make_unique<ForStmt>(advance().location);
+    stmt->name_location = peek().location;
+    if (!check(TokenKind::Identifier)) {
+        error_at(peek(), "expected a loop variable name after 'for', found " +
+                             describe_token(peek()));
+        return nullptr;
+    }
+    stmt->name = advance().text;
+    if (!expect(TokenKind::KwIn, "'in' after the loop variable")) {
+        return nullptr;
+    }
+    stmt->start = parse_binary(0);
+    if (!check(TokenKind::DotDot) && !check(TokenKind::DotDotEq)) {
+        error_at(peek(), "'for' needs a range 'a..b' or 'a..=b'; looping over collections is "
+                         "not supported yet");
+        return nullptr;
+    }
+    stmt->inclusive = advance().kind == TokenKind::DotDotEq;
+    stmt->end = parse_binary(0);
     if (!parse_suite(stmt->body)) {
         return nullptr;
     }

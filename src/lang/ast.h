@@ -305,6 +305,7 @@ enum class StmtKind {
     Return,
     If,
     While,
+    For,
     Match,
     Break,
     Continue,
@@ -447,6 +448,22 @@ struct MatchStmt final : Stmt {
     {
     }
     std::unique_ptr<MatchExpr> match;
+};
+
+// 'for name in start..end:' or 'start..=end'. The bounds are computed once
+// before the loop.
+struct ForStmt final : Stmt {
+    explicit ForStmt(SourceLocation location_value)
+        : Stmt(StmtKind::For, location_value)
+    {
+    }
+    std::string name;
+    SourceLocation name_location;
+    ExprPtr start;
+    ExprPtr end;
+    bool inclusive = false; // '..=' rather than '..'
+    Block body;
+    const VarSymbol* symbol = nullptr;
 };
 
 struct SimpleStmt final : Stmt {

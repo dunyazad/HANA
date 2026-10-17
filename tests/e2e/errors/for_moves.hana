@@ -1,0 +1,14 @@
+{
+  P: struct { s: str },
+  eat: fn<(sink p: P)> pass,
+  main: fn '''
+    let p = P { s: "a" }
+    for i in 0..3:
+      eat(p)
+    var q = P { s: "q" }
+    for i in 0..3:
+      eat(q)
+      q = P { s: "again" }
+    eat(q)
+  ''',
+}

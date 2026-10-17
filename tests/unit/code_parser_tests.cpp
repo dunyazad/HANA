@@ -185,3 +185,15 @@ TEST(code_parser_match_expression_positions)
     EXPECT(first_let_init(*r).kind == ExprKind::Match);
     EXPECT(parse_main("    f(match v:\n      _: 1\n    )\n")->has_error("can only be the value"));
 }
+
+TEST(code_parser_for_range)
+{
+    auto r = parse_main("    for i in 0..n + 1:\n      pass\n    for j in 1..=3: pass\n");
+    EXPECT(!r->diagnostics.has_errors());
+    const auto& first = static_cast<const ForStmt&>(*main_body(*r).statements[0]);
+    EXPECT(first.name == "i");
+    EXPECT(!first.inclusive);
+    EXPECT(first.end->kind == ExprKind::Binary);
+    EXPECT(static_cast<const ForStmt&>(*main_body(*r).statements[1]).inclusive);
+    EXPECT(parse_main("    for x in xs:\n      pass\n")->has_error("needs a range"));
+}

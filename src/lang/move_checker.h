@@ -50,6 +50,8 @@ private:
     void walk_assign(const AssignStmt& assign, State& state);
     void walk_if(const IfStmt& stmt, State& state);
     void walk_while(const WhileStmt& stmt, State& state);
+    void walk_for(const ForStmt& stmt, State& state);
+    void walk_loop(const Expr* condition, bool infinite, const Block& body, State& state);
     void walk_match(const MatchExpr& match, bool consuming, State& state);
     static void collect_bindings(const Pattern& pattern, std::vector<const VarSymbol*>& out);
     const VarSymbol* root_variable(const Expr& expr) const;

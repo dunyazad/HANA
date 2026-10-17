@@ -308,6 +308,7 @@ private:
         case StmtKind::Return: emit_return(static_cast<const ReturnStmt&>(stmt)); break;
         case StmtKind::If: emit_if(static_cast<const IfStmt&>(stmt)); break;
         case StmtKind::While: emit_while(static_cast<const WhileStmt&>(stmt)); break;
+        case StmtKind::For: emit_for(static_cast<const ForStmt&>(stmt)); break;
         case StmtKind::Match: emit_match(*static_cast<const MatchStmt&>(stmt).match, false); break;
         case StmtKind::Break: builder_.CreateBr(loops_.back().break_block); break;
         case StmtKind::Continue: builder_.CreateBr(loops_.back().continue_block); break;
@@ -386,6 +387,57 @@ private:
 
         end_block->moveAfter(&current_function_->back());
         builder_.SetInsertPoint(end_block);
+    }
+
+    // The loop runs only when the range is not empty, and stops after the
+    // body has run with the last value, before stepping past it. So the
+    // counter never goes beyond the range and the step cannot overflow,
+    // even for '0..=255u8'. 'continue' jumps to the step.
+    void emit_for(const ForStmt& stmt)
+    {
+        const Type* type = stmt.symbol->type;
+        llvm::Value* start = emit_expr(*stmt.start);
+        llvm::Value* end = emit_expr(*stmt.end);
+        llvm::AllocaInst* slot = create_entry_alloca(type, stmt.name);
+        builder_.CreateStore(start, slot);
+        addresses_[stmt.symbol] = slot;
+
+        auto* body_block = llvm::BasicBlock::Create(context_, "for.body", current_function_);
+        auto* step_block = llvm::BasicBlock::Create(context_, "for.step", current_function_);
+        auto* next_block = llvm::BasicBlock::Create(context_, "for.next", current_function_);
+        auto* end_block = llvm::BasicBlock::Create(context_, "for.end", current_function_);
+        // 'end - 1' may wrap for an empty range, but it is used only when the
+        // range has values.
+        llvm::Value* last =
+            stmt.inclusive ? end : builder_.CreateSub(end, llvm::ConstantInt::get(end->getType(), 1));
+        builder_.CreateCondBr(range_has_values(type, start, end, stmt.inclusive), body_block,
+                              end_block);
+
+        builder_.SetInsertPoint(body_block);
+        loops_.push_back(LoopTargets{end_block, step_block});
+        emit_block(stmt.body);
+        loops_.pop_back();
+        branch_if_open(step_block);
+
+        builder_.SetInsertPoint(step_block);
+        llvm::Value* current = builder_.CreateLoad(llvm_type(type), slot, stmt.name);
+        builder_.CreateCondBr(builder_.CreateICmpEQ(current, last), end_block, next_block);
+        builder_.SetInsertPoint(next_block);
+        builder_.CreateStore(builder_.CreateAdd(current, llvm::ConstantInt::get(current->getType(), 1)),
+                             slot);
+        builder_.CreateBr(body_block);
+
+        end_block->moveAfter(&current_function_->back());
+        builder_.SetInsertPoint(end_block);
+    }
+
+    llvm::Value* range_has_values(const Type* type, llvm::Value* start, llvm::Value* end,
+                                  bool inclusive)
+    {
+        if (type->is_signed) {
+            return inclusive ? builder_.CreateICmpSLE(start, end) : builder_.CreateICmpSLT(start, end);
+        }
+        return inclusive ? builder_.CreateICmpULE(start, end) : builder_.CreateICmpULT(start, end);
     }
 
     // -----------------------------------------------------------------------

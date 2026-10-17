@@ -190,6 +190,18 @@ private:
             nested(loop.body);
             break;
         }
+        case StmtKind::For: {
+            const auto& loop = static_cast<const ForStmt&>(stmt);
+            std::string header = "for " + loop.name;
+            if (loop.symbol != nullptr && loop.symbol->type != nullptr) {
+                header += ": " + std::string(loop.symbol->type->name);
+            }
+            line(header + (loop.inclusive ? " in ..=" : " in .."));
+            child(*loop.start);
+            child(*loop.end);
+            nested(loop.body);
+            break;
+        }
         case StmtKind::Match: dump_match(*static_cast<const MatchStmt&>(stmt).match); break;
         case StmtKind::Break: line("break"); break;
         case StmtKind::Continue: line("continue"); break;

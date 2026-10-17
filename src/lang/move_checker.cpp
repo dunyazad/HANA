@@ -91,6 +91,7 @@ void MoveChecker::walk_statement(const Stmt& stmt, State& state)
     }
     case StmtKind::If: walk_if(static_cast<const IfStmt&>(stmt), state); break;
     case StmtKind::While: walk_while(static_cast<const WhileStmt&>(stmt), state); break;
+    case StmtKind::For: walk_for(static_cast<const ForStmt&>(stmt), state); break;
     case StmtKind::Match: walk_match(*static_cast<const MatchStmt&>(stmt).match, false, state); break;
     case StmtKind::Break:
         loops_.back().breaks.push_back(state);
@@ -134,27 +135,43 @@ void MoveChecker::walk_if(const IfStmt& stmt, State& state)
     merge(state, else_state);
 }
 
-// The body is walked again with the moves of the previous iteration until
-// nothing new is moved at the start of an iteration.
 void MoveChecker::walk_while(const WhileStmt& stmt, State& state)
 {
     const bool infinite = stmt.condition->kind == ExprKind::BoolLiteral &&
                           static_cast<const BoolLiteralExpr&>(*stmt.condition).value;
+    walk_loop(stmt.condition.get(), infinite, stmt.body, state);
+}
+
+// The bounds run once before the loop; the body may run zero times.
+void MoveChecker::walk_for(const ForStmt& stmt, State& state)
+{
+    use(*stmt.start, state);
+    use(*stmt.end, state);
+    walk_loop(nullptr, false, stmt.body, state);
+}
+
+// The body is walked again with the moves of the previous iteration until
+// nothing new is moved at the start of an iteration. The condition, when
+// there is one, runs before each iteration and exits the loop when false.
+void MoveChecker::walk_loop(const Expr* condition, bool infinite, const Block& body, State& state)
+{
     State head = state;
     for (;;) {
         loops_.emplace_back();
-        State body = head;
-        use(*stmt.condition, body);
-        State exit = body;
+        State iteration = head;
+        if (condition != nullptr) {
+            use(*condition, iteration);
+        }
+        State exit = iteration;
         if (infinite) {
             exit.reachable = false;
         }
-        walk_block(stmt.body, body);
+        walk_block(body, iteration);
         Loop loop = std::move(loops_.back());
         loops_.pop_back();
 
         State next = head;
-        merge(next, body);
+        merge(next, iteration);
         for (const State& continued : loop.continues) {
             merge(next, continued);
         }

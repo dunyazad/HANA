@@ -484,8 +484,8 @@ void Sema::declare_self(FnDecl& function)
 void Sema::infer_literal_variables(FnDecl& function)
 {
     pending_.clear();
-    let_types_.clear();
-    collect_pending_lets(function.body);
+    var_types_.clear();
+    collect_pending_vars(function.body);
     if (pending_.empty()) {
         return;
     }
@@ -495,8 +495,8 @@ void Sema::infer_literal_variables(FnDecl& function)
     inferring_ = true;
     for (std::size_t round = 0; round <= pending_.size(); ++round) {
         bound_new_ = false;
-        let_placeholders_.clear();
-        placeholder_lets_.clear();
+        var_placeholders_.clear();
+        placeholder_vars_.clear();
         check_body_once(function);
         if (!bound_new_) {
             break;
@@ -504,14 +504,14 @@ void Sema::infer_literal_variables(FnDecl& function)
     }
     inferring_ = false;
     diagnostics_ = real;
-    let_placeholders_.clear();
-    placeholder_lets_.clear();
-    for (const PendingLet& pending : pending_) {
-        let_types_.try_emplace(pending.let, pending.is_float ? f64_type() : i32_type());
+    var_placeholders_.clear();
+    placeholder_vars_.clear();
+    for (const PendingVar& pending : pending_) {
+        var_types_.try_emplace(pending.stmt, pending.is_float ? f64_type() : i32_type());
     }
 }
 
-void Sema::collect_pending_lets(Block& block)
+void Sema::collect_pending_vars(Block& block)
 {
     for (auto& statement : block.statements) {
         switch (statement->kind) {
@@ -522,22 +522,30 @@ void Sema::collect_pending_lets(Block& block)
                 if (literal->kind == ExprKind::Unary) {
                     literal = static_cast<const UnaryExpr&>(*literal).operand.get();
                 }
-                pending_.push_back(PendingLet{&let, literal->kind == ExprKind::FloatLiteral});
+                pending_.push_back(PendingVar{&let, literal->kind == ExprKind::FloatLiteral});
             }
             break;
         }
         case StmtKind::If: {
             auto& stmt = static_cast<IfStmt&>(*statement);
-            collect_pending_lets(stmt.then_block);
+            collect_pending_vars(stmt.then_block);
             if (stmt.else_block) {
-                collect_pending_lets(*stmt.else_block);
+                collect_pending_vars(*stmt.else_block);
             }
             break;
         }
-        case StmtKind::While: collect_pending_lets(static_cast<WhileStmt&>(*statement).body); break;
+        case StmtKind::While: collect_pending_vars(static_cast<WhileStmt&>(*statement).body); break;
+        case StmtKind::For: {
+            auto& loop = static_cast<ForStmt&>(*statement);
+            if (is_untyped_literal(*loop.start) && is_untyped_literal(*loop.end)) {
+                pending_.push_back(PendingVar{&loop, false});
+            }
+            collect_pending_vars(loop.body);
+            break;
+        }
         case StmtKind::Match:
             for (MatchArm& arm : static_cast<MatchStmt&>(*statement).match->arms) {
-                collect_pending_lets(arm.body);
+                collect_pending_vars(arm.body);
             }
             break;
         default: break;
@@ -546,28 +554,29 @@ void Sema::collect_pending_lets(Block& block)
 }
 
 // The type a pending literal variable gets in the current pass: its found
-// type, a placeholder while inferring, or null when the let is not pending.
-const Type* Sema::literal_variable_type(const LetStmt& let)
+// type, a placeholder while inferring, or null when the statement is not
+// pending.
+const Type* Sema::literal_variable_type(const Stmt& stmt)
 {
-    if (auto found = let_types_.find(&let); found != let_types_.end()) {
+    if (auto found = var_types_.find(&stmt); found != var_types_.end()) {
         return found->second;
     }
     if (!inferring_) {
         return nullptr;
     }
-    for (const PendingLet& pending : pending_) {
-        if (pending.let != &let) {
+    for (const PendingVar& pending : pending_) {
+        if (pending.stmt != &stmt) {
             continue;
         }
-        if (auto existing = let_placeholders_.find(&let); existing != let_placeholders_.end()) {
+        if (auto existing = var_placeholders_.find(&stmt); existing != var_placeholders_.end()) {
             return existing->second;
         }
         Type& placeholder = placeholder_storage_.emplace_back(Type{
             pending.is_float ? TypeKind::Float : TypeKind::Int,
             pending.is_float ? "{float}" : "{integer}", 64, true});
         placeholder.is_literal_var = true;
-        let_placeholders_[&let] = &placeholder;
-        placeholder_lets_[&placeholder] = &let;
+        var_placeholders_[&stmt] = &placeholder;
+        placeholder_vars_[&placeholder] = &stmt;
         return &placeholder;
     }
     return nullptr;
@@ -577,15 +586,15 @@ const Type* Sema::literal_variable_type(const LetStmt& let)
 // Integer literals may become any numeric type, float literals only floats.
 bool Sema::bind(const Type* placeholder, const Type* concrete)
 {
-    auto it = placeholder_lets_.find(placeholder);
-    if (it == placeholder_lets_.end() || concrete->is_literal_var || concrete->is_error()) {
+    auto it = placeholder_vars_.find(placeholder);
+    if (it == placeholder_vars_.end() || concrete->is_literal_var || concrete->is_error()) {
         return false;
     }
     const bool compatible = placeholder->is_float() ? concrete->is_float() : concrete->is_numeric();
     if (!compatible) {
         return false;
     }
-    if (let_types_.try_emplace(it->second, concrete).second) {
+    if (var_types_.try_emplace(it->second, concrete).second) {
         bound_new_ = true;
     }
     return true;
@@ -644,6 +653,7 @@ bool Sema::check_statement(Stmt& stmt)
     case StmtKind::Return: return check_return(static_cast<ReturnStmt&>(stmt));
     case StmtKind::If: return check_if(static_cast<IfStmt&>(stmt));
     case StmtKind::While: return check_while(static_cast<WhileStmt&>(stmt));
+    case StmtKind::For: return check_for(static_cast<ForStmt&>(stmt));
     case StmtKind::Match: return check_match_statement(static_cast<MatchStmt&>(stmt));
     case StmtKind::Break: return check_jump(stmt, "break");
     case StmtKind::Continue: return check_jump(stmt, "continue");
@@ -721,6 +731,8 @@ void Sema::require_mutable(const Place& place, MutationKind kind, const std::str
         remedy = "declare the method with 'inout self' to modify the value it is called on";
     } else if (is_param) {
         remedy = "declare it 'inout' to modify the caller's value";
+    } else if (var.is_loop_variable) {
+        remedy = "the variable of a 'for' loop cannot be changed; copy it into a 'var' first";
     } else {
         remedy = "use 'var' to make it mutable";
     }
@@ -729,6 +741,8 @@ void Sema::require_mutable(const Place& place, MutationKind kind, const std::str
     case MutationKind::Assign:
         if (whole && is_param) {
             message = "cannot assign to parameter '" + var.name + "'; " + remedy;
+        } else if (whole && var.is_loop_variable) {
+            message = "cannot assign to '" + var.name + "'; " + remedy;
         } else if (whole) {
             message = "cannot assign to '" + var.name + "' because it is declared with 'let'; " +
                       remedy;
@@ -801,6 +815,54 @@ bool Sema::check_while(WhileStmt& stmt)
     const bool always_true = stmt.condition->kind == ExprKind::BoolLiteral &&
                              static_cast<const BoolLiteralExpr&>(*stmt.condition).value;
     return always_true && !has_break;
+}
+
+// The loop variable is a 'let' of the bound type, declared for the body.
+// A 'for' loop always ends, so it never makes the code after it unreachable.
+bool Sema::check_for(ForStmt& stmt)
+{
+    const Type* type = check_range_bounds(stmt);
+    loops_.push_back(LoopContext{});
+    push_scope();
+    VarSymbol* symbol = declare_var(stmt.name, type, VarKind::Local, false, stmt.name_location);
+    symbol->is_loop_variable = true;
+    stmt.symbol = symbol;
+    check_block(stmt.body);
+    pop_scope();
+    loops_.pop_back();
+    return false;
+}
+
+// Both bounds have one integer type. An untyped literal takes the type of
+// the other bound; when both are untyped, the loop variable takes the type
+// of its first typed use, like 'var i = 0'.
+const Type* Sema::check_range_bounds(ForStmt& stmt)
+{
+    const Type* expected = literal_variable_type(stmt);
+    const Type* start = nullptr;
+    const Type* end = nullptr;
+    if (is_untyped_literal(*stmt.start) && !is_untyped_literal(*stmt.end)) {
+        end = check_expr(*stmt.end, expected);
+        start = check_expr(*stmt.start, end);
+    } else {
+        start = check_expr(*stmt.start, expected);
+        end = check_expr(*stmt.end, start);
+    }
+    if (start->is_error() || end->is_error()) {
+        return error_type();
+    }
+    const Type* common = unify(start, end);
+    if (common == nullptr) {
+        diagnostics_->error(stmt.end->location, "the bounds of the range have different types " +
+                                                    quoted(start) + " and " + quoted(end));
+        return error_type();
+    }
+    if (!common->is_integer()) {
+        diagnostics_->error(stmt.start->location, "a 'for' range needs integer bounds, found " +
+                                                      quoted(common));
+        return error_type();
+    }
+    return common;
 }
 
 bool Sema::check_jump(Stmt& stmt, const char* keyword)
@@ -1614,8 +1676,8 @@ void Sema::pop_scope()
     scopes_.pop_back();
 }
 
-const VarSymbol* Sema::declare_var(const std::string& name, const Type* type, VarKind kind,
-                                   bool is_mutable, const SourceLocation& location)
+VarSymbol* Sema::declare_var(const std::string& name, const Type* type, VarKind kind,
+                             bool is_mutable, const SourceLocation& location)
 {
     auto& scope = scopes_.back();
     if (auto it = scope.find(name); it != scope.end()) {

@@ -1,0 +1,4 @@
+{ main: fn '''
+  for x in items:
+    pass
+''' }

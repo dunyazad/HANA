@@ -1,0 +1,6 @@
+for_loops.hana:5:14: error: a 'for' range needs integer bounds, found 'f64'
+for_loops.hana:9:17: error: the bounds of the range have different types 'i64' and 'i32'
+for_loops.hana:12:7: error: cannot assign to 'x'; the variable of a 'for' loop cannot be changed; copy it into a 'var' first
+for_loops.hana:11:9: note: 'x' is declared here
+for_loops.hana:13:14: error: a 'for' range needs integer bounds, found 'char'
+for_loops.hana:18:11: error: unknown name 'x'

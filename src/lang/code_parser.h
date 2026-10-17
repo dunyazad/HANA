@@ -36,6 +36,7 @@ private:
     StmtPtr parse_return();
     StmtPtr parse_if();
     StmtPtr parse_while();
+    StmtPtr parse_for();
     StmtPtr parse_expression_statement();
     bool parse_suite(Block& block);
     bool expect_line_end();

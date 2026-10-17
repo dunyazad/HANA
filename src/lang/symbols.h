@@ -23,6 +23,7 @@ struct VarSymbol {
     const Type* type = nullptr;
     VarKind kind = VarKind::Local;
     bool is_mutable = false;
+    bool is_loop_variable = false; // the variable of a 'for' loop
     SourceLocation location;
 };
 
