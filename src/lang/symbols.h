@@ -31,6 +31,7 @@ enum class Intrinsic {
     None,
     Print, // print(value): writes the value and a newline
     Write, // write(value): writes the value only
+    Some,  // Some(value): an Option holding the value
 };
 
 struct FunctionSymbol {
@@ -52,7 +53,7 @@ struct Program {
     std::deque<VarSymbol> vars;
     std::deque<FunctionSymbol> functions;
     std::deque<UserType> types;
-    std::deque<TupleType> tuples;
+    std::deque<ComposedType> composed_types; // tuples and Options
     const FunctionSymbol* main = nullptr;
 };
 

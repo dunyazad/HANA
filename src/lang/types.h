@@ -21,6 +21,7 @@ enum class TypeKind {
     Struct,
     Enum,
     Tuple,
+    Option, // Option<T>: 'elements' holds T
 };
 
 struct UserType;
@@ -36,7 +37,7 @@ struct Type {
     // with an untyped literal ('var i = 0'). Never survives semantic analysis.
     bool is_literal_var = false;
     const UserType* user = nullptr; // for Struct and Enum
-    std::vector<const Type*> elements{}; // for Tuple
+    std::vector<const Type*> elements{}; // for Tuple, and T of Option<T>
 
     bool is_error() const { return kind == TypeKind::Error; }
     bool is_void() const { return kind == TypeKind::Void; }
@@ -47,6 +48,9 @@ struct Type {
     bool is_enum() const { return kind == TypeKind::Enum; }
     bool is_user() const { return is_struct() || is_enum(); }
     bool is_tuple() const { return kind == TypeKind::Tuple; }
+    bool is_option() const { return kind == TypeKind::Option; }
+    // T of Option<T>.
+    const Type* option_value() const { return elements.front(); }
 };
 
 struct FunctionSymbol;
@@ -86,15 +90,16 @@ struct UserType {
     int find_case(std::string_view case_name) const;
 };
 
-// A tuple type, created once per list of element types. Owned by the
+// A tuple or Option type, created once per element types. Owned by the
 // Program; 'type.name' views 'name'.
-struct TupleType {
-    std::string name; // "(i32, f64)"
+struct ComposedType {
+    std::string name; // "(i32, f64)", "Option<i32>"
     Type type{TypeKind::Tuple, {}};
 };
 
 // Copy types are duplicated instead of moved: numbers, bool, char and
-// structs and enums declared with 'copy', and tuples of Copy elements.
+// structs and enums declared with 'copy', and tuples and Options of Copy
+// elements.
 bool is_copy_type(const Type* type);
 
 // Looks up a type by its source name ("i32", "bool", ...). Returns null for

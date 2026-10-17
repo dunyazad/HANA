@@ -1,0 +1,65 @@
+// Option: 'T?' and 'Option<T>', null, Some(...), values wrapped where an
+// Option is expected, '== null', and Some/null patterns, nested too.
+{
+  Player: struct {
+    name: str,
+    nickname: str? = null,
+    best: i64? = null,
+  },
+  find: fn<i32?(n: i32)> '''
+    if n > 0: return n
+    return null
+  ''',
+  half: fn<Option<i64>(n: i64)> n / 2 if n % 2 == 0 else null,
+  show: fn<(x: i32?)> '''
+    match x:
+      Some(v): print(f"some {v}")
+      null: print("none")
+  ''',
+  greet: fn<(name: str?)> '''
+    match name:
+      Some(n): print(f"hi {n}")
+      null: print("hi stranger")
+  ''',
+  main: fn '''
+    show(find(5))
+    show(find(-1))
+    show(7)
+    show(null)
+    show(Some(8))
+    let a: u8? = 200
+    let b: Option<u8> = null
+    print(a != null)
+    print(b == null)
+    print(null == b)
+    match half(10):
+      Some(h): print(h)
+      null: print("odd")
+    match half(7):
+      Some(h): print(h)
+      null: print("odd")
+    var p = Player { name: "ann" }
+    greet(p.nickname)
+    p.nickname = "annie"
+    greet(p.nickname)
+    p.best = 42
+    match p.best:
+      Some(score) if score > 40: print("great")
+      Some(_): print("ok")
+      null: print("no score")
+    let nested: i32?? = Some(null)
+    match nested:
+      Some(Some(v)): print(v)
+      Some(null): print("inner none")
+      null: print("outer none")
+    let pair: (i32, bool)? = (1, true)
+    match pair:
+      Some((n, true)): print(n)
+      _: print("other")
+    var count = 0
+    for i in -2..3:
+      if find(i) != null:
+        count += 1
+    print(count)
+  ''',
+}

@@ -91,6 +91,15 @@ private:
     bool check_for(ForStmt& stmt);
     const Type* check_range_bounds(ForStmt& stmt);
 
+    // Option (sema_option.cpp)
+    const Type* option_type(const Type* value);
+    static const Type* value_expectation(const Expr& expr, const Type* expected);
+    const Type* wrap_in_option(Expr& expr, const Type* type, const Type* expected);
+    const Type* check_null(Expr& expr, const Type* expected);
+    const Type* check_some_call(CallExpr& call, const Type* expected);
+    const Type* check_option_comparison(BinaryExpr& binary);
+    void check_option_case_pattern(Pattern& pattern, const Type* subject);
+
     // Tuples (sema_tuple.cpp)
     const Type* resolve_tuple_type(const TypeExpr& type);
     const Type* tuple_type(const std::vector<const Type*>& elements);
@@ -117,6 +126,7 @@ private:
 
     // Expressions; each returns the type and also stores it in expr.type.
     const Type* check_expr(Expr& expr, const Type* expected);
+    const Type* check_expr_value(Expr& expr, const Type* expected);
     const Type* check_int_literal(IntLiteralExpr& lit, const Type* expected, bool negated);
     const Type* check_float_literal(FloatLiteralExpr& lit, const Type* expected);
     const Type* check_string_literal(StringLiteralExpr& lit);
@@ -135,8 +145,8 @@ private:
     const Type* check_member(MemberExpr& member);
     const Type* check_static_member(MemberExpr& member, const UserType& info);
     const UserType* static_type_name(const Expr& object) const;
-    const Type* check_call(CallExpr& call);
-    const Type* check_function_call(CallExpr& call, NameExpr& callee);
+    const Type* check_call(CallExpr& call, const Type* expected);
+    const Type* check_function_call(CallExpr& call, NameExpr& callee, const Type* expected);
     const Type* check_method_call(CallExpr& call, MemberExpr& callee);
     const FunctionSymbol* find_static_function(MemberExpr& callee, const UserType& info);
     const FunctionSymbol* find_method(MemberExpr& callee, const Type* receiver);
@@ -174,6 +184,7 @@ private:
     std::unordered_map<std::string, const FunctionSymbol*> functions_;
     std::unordered_map<std::string, UserType*> types_;
     std::map<std::vector<const Type*>, const Type*> tuple_types_;
+    std::unordered_map<const Type*, const Type*> option_types_;
     std::vector<std::unordered_map<std::string, const VarSymbol*>> scopes_;
     std::vector<LoopContext> loops_;
     const Type* return_type_ = nullptr;

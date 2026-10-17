@@ -13,6 +13,12 @@ using sema_util::quoted;
 
 namespace {
 
+// An untyped literal or 'null' takes its type from the other operand.
+bool takes_type_from_other(const Expr& expr)
+{
+    return is_untyped_literal(expr) || expr.kind == ExprKind::Null;
+}
+
 bool is_comparison(BinaryOp op)
 {
     switch (op) {
@@ -91,6 +97,9 @@ bool places_overlap(const Place& a, const Place& b)
 
 std::optional<Place> place_of(const Expr& expr)
 {
+    if (expr.converted_to != nullptr) {
+        return std::nullopt; // a new Option holding the value, not the place itself
+    }
     if (expr.kind == ExprKind::Name) {
         const auto& name = static_cast<const NameExpr&>(expr);
         if (name.var == nullptr) {
@@ -171,6 +180,7 @@ void Sema::declare_intrinsics()
     static constexpr IntrinsicEntry kIntrinsics[] = {
         {"print", Intrinsic::Print},
         {"write", Intrinsic::Write},
+        {"Some", Intrinsic::Some},
     };
     for (const IntrinsicEntry& entry : kIntrinsics) {
         FunctionSymbol& symbol = program_->functions.emplace_back();
@@ -629,6 +639,10 @@ const Type* Sema::unify(const Type* a, const Type* b)
     if (a->is_tuple() && b->is_tuple() && a->elements.size() == b->elements.size()) {
         return unify_tuples(a, b);
     }
+    if (a->is_option() && b->is_option()) {
+        const Type* value = unify(a->option_value(), b->option_value());
+        return value != nullptr ? option_type(value) : nullptr;
+    }
     return nullptr;
 }
 
@@ -648,6 +662,10 @@ const Type* Sema::unify_tuples(const Type* a, const Type* b)
 
 const Type* Sema::resolve_type(const TypeExpr& type)
 {
+    if (type.is_option) {
+        const Type* value = resolve_type(type.elements.front());
+        return value->is_error() ? value : option_type(value);
+    }
     if (!type.elements.empty()) {
         return resolve_tuple_type(type);
     }
@@ -921,7 +939,16 @@ void Sema::check_condition(Expr& condition)
 // ---------------------------------------------------------------------------
 // Expressions
 
+// Checks the value of the expression, then wraps it into an Option when an
+// Option is expected and the value is not one ('let a: i32? = 5').
 const Type* Sema::check_expr(Expr& expr, const Type* expected)
+{
+    expr.converted_to = nullptr; // inference passes check expressions again
+    const Type* type = check_expr_value(expr, value_expectation(expr, expected));
+    return wrap_in_option(expr, type, expected);
+}
+
+const Type* Sema::check_expr_value(Expr& expr, const Type* expected)
 {
     const Type* type = error_type();
     switch (expr.kind) {
@@ -937,9 +964,7 @@ const Type* Sema::check_expr(Expr& expr, const Type* expected)
     case ExprKind::StringLiteral:
         type = check_string_literal(static_cast<StringLiteralExpr&>(expr));
         break;
-    case ExprKind::Null:
-        diagnostics_->error(expr.location, "'null' needs Option<T>, which is not supported yet");
-        break;
+    case ExprKind::Null: type = check_null(expr, expected); break;
     case ExprKind::Name: type = check_name(static_cast<NameExpr&>(expr), expected); break;
     case ExprKind::Conditional:
         type = check_conditional(static_cast<ConditionalExpr&>(expr), expected);
@@ -947,7 +972,7 @@ const Type* Sema::check_expr(Expr& expr, const Type* expected)
     case ExprKind::Cast: type = check_cast(static_cast<CastExpr&>(expr)); break;
     case ExprKind::Unary: type = check_unary(static_cast<UnaryExpr&>(expr), expected); break;
     case ExprKind::Binary: type = check_binary(static_cast<BinaryExpr&>(expr), expected); break;
-    case ExprKind::Call: type = check_call(static_cast<CallExpr&>(expr)); break;
+    case ExprKind::Call: type = check_call(static_cast<CallExpr&>(expr), expected); break;
     case ExprKind::StructLiteral:
         type = check_struct_literal(static_cast<StructLiteralExpr&>(expr));
         break;
@@ -1010,7 +1035,7 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
         const Type* type = check_expr(*part, nullptr);
         if (type->is_void()) {
             diagnostics_->error(part->location, "expression has no value to insert");
-        } else if (type->is_user() || type->is_tuple()) {
+        } else if (type->is_user() || type->is_tuple() || type->is_option()) {
             check_printable(type, part->location);
         }
     }
@@ -1132,6 +1157,9 @@ const Type* Sema::check_binary(BinaryExpr& binary, const Type* expected)
     if (operand->is_error()) {
         return error_type();
     }
+    if (operand->is_option()) {
+        return check_option_comparison(binary);
+    }
     return binary_result_type(binary.op, operand, binary.op_location);
 }
 
@@ -1147,7 +1175,7 @@ const Type* Sema::check_binary_operands(BinaryExpr& binary, const Type* expected
     }
     const Type* lhs = nullptr;
     const Type* rhs = nullptr;
-    if (is_untyped_literal(*binary.lhs) && !is_untyped_literal(*binary.rhs)) {
+    if (takes_type_from_other(*binary.lhs) && !takes_type_from_other(*binary.rhs)) {
         rhs = check_expr(*binary.rhs, operand_expected);
         lhs = check_expr(*binary.lhs, rhs);
     } else {
@@ -1395,10 +1423,10 @@ const UserType* Sema::static_type_name(const Expr& object) const
     return lookup_var(name) == nullptr ? lookup_type(name) : nullptr;
 }
 
-const Type* Sema::check_call(CallExpr& call)
+const Type* Sema::check_call(CallExpr& call, const Type* expected)
 {
     if (call.callee->kind == ExprKind::Name) {
-        return check_function_call(call, static_cast<NameExpr&>(*call.callee));
+        return check_function_call(call, static_cast<NameExpr&>(*call.callee), expected);
     }
     if (call.callee->kind == ExprKind::Member) {
         return check_method_call(call, static_cast<MemberExpr&>(*call.callee));
@@ -1411,7 +1439,7 @@ const Type* Sema::check_call(CallExpr& call)
     return error_type();
 }
 
-const Type* Sema::check_function_call(CallExpr& call, NameExpr& callee)
+const Type* Sema::check_function_call(CallExpr& call, NameExpr& callee, const Type* expected)
 {
     callee.type = void_type();
     const FunctionSymbol* function = nullptr;
@@ -1430,6 +1458,9 @@ const Type* Sema::check_function_call(CallExpr& call, NameExpr& callee)
         return error_type();
     }
     callee.function = function;
+    if (function->intrinsic == Intrinsic::Some) {
+        return check_some_call(call, expected);
+    }
     if (function->intrinsic != Intrinsic::None) {
         return check_intrinsic_call(call, *function);
     }
@@ -1576,6 +1607,9 @@ void Sema::check_printable(const Type* type, const SourceLocation& location)
                                           " cannot be printed yet; use 'match' to print each case");
     } else if (type->is_tuple()) {
         diagnostics_->error(location, "a tuple cannot be printed yet; print its elements");
+    } else if (type->is_option()) {
+        diagnostics_->error(location, "an Option cannot be printed yet; use 'match' to print its "
+                                      "value");
     }
 }
 

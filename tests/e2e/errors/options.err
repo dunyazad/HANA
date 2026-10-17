@@ -1,0 +1,16 @@
+options.hana:3:20: error: 'C' is declared 'struct copy', but field 'o' of type 'Option<str>' is not Copy
+options.hana:4:15: error: struct 'L' contains itself through field 'next'; a struct cannot hold itself by value
+options.hana:8:13: error: 'null' needs to know its Option type here; write the type, as in 'let x: i32? = null'
+options.hana:9:18: error: a value of type 'i32' cannot be 'null'; use 'i32?' to allow it
+options.hana:11:11: error: an Option cannot be printed yet; use 'match' to print its value
+options.hana:12:15: error: operator '+' cannot be applied to an Option; use 'match' to read its value
+options.hana:13:13: error: an Option can only be compared with 'null'; use 'match' to read its value
+options.hana:14:13: error: operator '<' cannot be applied to an Option; use 'match' to read its value
+options.hana:16:12: error: expected 'Option<i32>', found 'i32'
+options.hana:17:17: error: 'Some' takes one value, found 2
+options.hana:18:18: error: integer literal 300 does not fit in 'u8'
+options.hana:19:5: error: 'match' does not cover 'null'; add an arm for it or a final '_' arm
+options.hana:22:7: error: 'Some' holds one value; match it with 'Some(name)' or 'Some(_)'
+options.hana:24:5: error: 'match' does not cover 'Some(_)'; add an arm for it or a final '_' arm
+options.hana:30:7: error: this arm is never reached; the arms before it already match all of its values
+options.hana:32:7: error: 'null' only matches an Option, but the value has type 'i32'

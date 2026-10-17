@@ -60,6 +60,7 @@ private:
     // Expressions: 'use' reads a value, 'consume' moves it when it is not
     // Copy.
     void use(const Expr& expr, State& state);
+    void use_value(const Expr& expr, State& state);
     void consume(const Expr& expr, State& state);
     void move_variable(const VarSymbol& var, const Expr& moved, State& state);
     void walk_call(const CallExpr& call, State& state);

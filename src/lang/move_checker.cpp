@@ -198,7 +198,19 @@ void MoveChecker::walk_loop(const Expr* condition, bool infinite, const Block& b
 // ---------------------------------------------------------------------------
 // Expressions
 
+// A value wrapped into an Option where one is expected is held by the new
+// Option, like 'Some(value)', so a value that is not Copy moves even when
+// it is only read, as in an argument for a read parameter of type 'P?'.
 void MoveChecker::use(const Expr& expr, State& state)
+{
+    if (expr.converted_to != nullptr && expr.type != nullptr && !is_copy_type(expr.type)) {
+        consume(expr, state);
+        return;
+    }
+    use_value(expr, state);
+}
+
+void MoveChecker::use_value(const Expr& expr, State& state)
 {
     switch (expr.kind) {
     case ExprKind::Name: {
@@ -283,13 +295,13 @@ void MoveChecker::use(const Expr& expr, State& state)
 void MoveChecker::consume(const Expr& expr, State& state)
 {
     if (expr.type == nullptr || is_copy_type(expr.type)) {
-        use(expr, state);
+        use_value(expr, state);
         return;
     }
     switch (expr.kind) {
     case ExprKind::Name:
     case ExprKind::Member: {
-        use(expr, state);
+        use_value(expr, state);
         // Moving a field moves the whole variable it belongs to. A field of
         // a temporary value can be moved freely.
         const Expr& root = root_of(expr);
@@ -304,7 +316,7 @@ void MoveChecker::consume(const Expr& expr, State& state)
         return;
     }
     case ExprKind::Match: walk_match(static_cast<const MatchExpr&>(expr), true, state); return;
-    default: use(expr, state); return;
+    default: use_value(expr, state); return;
     }
 }
 
@@ -436,6 +448,12 @@ void MoveChecker::walk_call(const CallExpr& call, State& state)
         return;
     }
     const FunctionSymbol& function = *static_cast<const NameExpr&>(*call.callee).function;
+    if (function.intrinsic == Intrinsic::Some) {
+        for (const auto& arg : call.args) {
+            consume(*arg, state); // the Option holds the value
+        }
+        return;
+    }
     if (function.intrinsic != Intrinsic::None) {
         for (const auto& arg : call.args) {
             use(*arg, state);

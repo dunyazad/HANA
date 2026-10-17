@@ -44,6 +44,16 @@ const char* unary_op_spelling(UnaryOp op)
     return "?";
 }
 
+TypeExpr option_type_expr(TypeExpr value)
+{
+    TypeExpr option;
+    option.name = "Option<" + value.name + ">";
+    option.location = value.location;
+    option.is_option = true;
+    option.elements.push_back(std::move(value));
+    return option;
+}
+
 std::string tuple_type_text(const std::vector<std::string>& element_names)
 {
     std::string text = "(";
@@ -270,6 +280,7 @@ private:
     {
         switch (pattern.kind) {
         case PatternKind::Wildcard: line("pattern _"); break;
+        case PatternKind::Null: line("pattern null"); break;
         case PatternKind::Binding: line("pattern name " + pattern.name); break;
         case PatternKind::Literal:
             line("pattern literal");

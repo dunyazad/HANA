@@ -7,7 +7,7 @@ enums.hana:8:13: error: 'S' is an enum; create a value of one of its cases, as i
 enums.hana:9:14: error: 'S.A' has fields; create it with 'S.A { x: ... }'
 enums.hana:10:14: error: enum values are created with 'S.A { field: value }', not with '()'
 enums.hana:12:5: error: 'match' does not cover 'Y'; add an arm for it or a final '_' arm
-enums.hana:16:7: error: this arm is never reached; an earlier arm matches every value
+enums.hana:16:7: error: this arm is never reached; the arms before it already match all of its values
 enums.hana:17:5: error: 'match' on a value of type 'i32' needs a final '_' arm (or a name) for the values the other arms do not cover
 enums.hana:19:5: error: 'match' does not cover 'false'; add an arm for it or a final '_' arm
 enums.hana:22:7: error: case 'X' has 0 field(s), but the pattern has 1

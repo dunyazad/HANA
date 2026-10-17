@@ -9,6 +9,6 @@ tuples.hana:11:13: error: a 'let' pattern must match every value; use 'match' to
 tuples.hana:12:9: error: only tuples can be destructured, but the value has type 'i32'
 tuples.hana:13:5: error: cannot assign to 't.0' because 't' is declared with 'let'; use 'var' to make it mutable
 tuples.hana:6:9: note: 't' is declared here
-tuples.hana:14:5: error: 'match' on a value of type '(i32, i32)' needs a final '_' arm (or a name) for the values the other arms do not cover
+tuples.hana:14:5: error: 'match' does not cover '(_, _)'; add an arm for it or a final '_' arm
 tuples.hana:16:26: error: expected '(i32, bool)', found '(i32, i32)'
 tuples.hana:17:19: error: this element has no value

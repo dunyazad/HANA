@@ -397,13 +397,13 @@ TEST(sema_enum_program)
 TEST(sema_match_coverage)
 {
     const char* head = "{ E: enum { A: {}, B: { x: i32 } }, f: fn<(e: E)> '''\n  match e:\n";
-    EXPECT(check(std::string(head) + "    A: pass\n''' }")->has_error("does not cover 'B'"));
+    EXPECT(check(std::string(head) + "    A: pass\n''' }")->has_error("does not cover 'B(_)'"));
     EXPECT(!check(std::string(head) + "    A: pass\n    B(_): pass\n''' }")->diagnostics.has_errors());
     // A guarded arm or a refutable field pattern does not cover the case.
     EXPECT(check(std::string(head) + "    A: pass\n    B(x) if x > 0: pass\n''' }")
-               ->has_error("does not cover 'B'"));
+               ->has_error("does not cover 'B(_)'"));
     EXPECT(check(std::string(head) + "    A: pass\n    B(1): pass\n''' }")
-               ->has_error("does not cover 'B'"));
+               ->has_error("does not cover 'B(_)'"));
     EXPECT(check("{ f: fn<(n: i32)> '''\n  match n:\n    1: pass\n''' }")->has_error("needs a final '_'"));
 }
 
@@ -476,7 +476,7 @@ TEST(sema_tuple_types_are_shared)
 {
     auto r = check("{ f: fn<(i32, i64)()> (1, 2), g: fn<(i32, i64)()> f() }");
     EXPECT(!r->diagnostics.has_errors());
-    EXPECT(r->program->tuples.size() == 1);
+    EXPECT(r->program->composed_types.size() == 1);
 }
 
 TEST(sema_tuple_errors)
@@ -503,4 +503,65 @@ TEST(sema_tuple_inference_through_elements)
     EXPECT(!r->diagnostics.has_errors());
     const auto& let = static_cast<const LetStmt&>(*r->module->functions[0]->body.statements[0]);
     EXPECT(let.symbol->type->name == "i64");
+}
+
+TEST(sema_option_values)
+{
+    auto r = check(R"({
+  find: fn<i32?(n: i32)> n if n > 0 else null,
+  f: fn<bool()> '''
+    let a: u8? = 200
+    let b: Option<u8> = Some(1)
+    let c: i64?? = Some(null)
+    var d: i32? = null
+    d = 5
+    return a != null and null == d and find(1) != null
+  ''',
+})");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(check("{ f: fn '''\n  let a = null\n''' }")->has_error("needs to know its Option type"));
+    EXPECT(check("{ f: fn '''\n  let a: i32 = null\n''' }")->has_error("cannot be 'null'"));
+    EXPECT(check("{ f: fn<(a: i32?)> print(a == 5) }")->has_error("only be compared with 'null'"));
+    EXPECT(check("{ g: fn<(inout x: i32?)> pass, f: fn '''\n  var n = 1\n  g(&n)\n''' }")
+               ->has_error("expected 'Option<i32>', found 'i32'"));
+}
+
+TEST(sema_option_types_are_shared)
+{
+    auto r = check("{ f: fn<i32?()> null, g: fn<Option<i32>()> f() }");
+    EXPECT(!r->diagnostics.has_errors());
+}
+
+TEST(sema_coverage_is_nested)
+{
+    // Some(Some(_)), Some(null) and null cover Option<Option<T>>.
+    EXPECT(!check("{ f: fn<(x: Option<i32?>)> '''\n  match x:\n    Some(Some(v)): pass\n    Some(null): pass\n"
+                  "    null: pass\n''' }")
+                ->diagnostics.has_errors());
+    EXPECT(check("{ f: fn<(x: Option<i32?>)> '''\n  match x:\n    Some(Some(v)): pass\n    null: pass\n''' }")
+               ->has_error("does not cover 'Some(null)'"));
+    // Tuples of bools are covered constructor by constructor.
+    EXPECT(!check("{ f: fn<(x: (bool, bool))> '''\n  match x:\n    (true, _): pass\n    (false, true): pass\n"
+                  "    (false, false): pass\n''' }")
+                ->diagnostics.has_errors());
+    EXPECT(check("{ f: fn<(x: (bool, bool))> '''\n  match x:\n    (true, _): pass\n    (_, true): pass\n''' }")
+               ->has_error("does not cover '(false, false)'"));
+}
+
+TEST(sema_coverage_finds_unreachable_arms)
+{
+    EXPECT(check("{ E: enum { A: {}, B: {} }, f: fn<(e: E)> '''\n  match e:\n    A: pass\n    B: pass\n"
+                 "    A: pass\n''' }")
+               ->has_error("never reached"));
+    // A guarded arm covers nothing, so an arm after it is reachable.
+    EXPECT(!check("{ f: fn<(x: i32?)> '''\n  match x:\n    Some(v) if v > 0: pass\n    Some(_): pass\n"
+                  "    null: pass\n''' }")
+                ->diagnostics.has_errors());
+}
+
+TEST(sema_wrapped_values_move)
+{
+    EXPECT(check("{ P: struct { s: str }, keep: fn<(o: P?)> pass, f: fn '''\n  let q = P { s: \"a\" }\n"
+                 "  keep(q)\n  keep(q)\n''' }")
+               ->has_error("use of moved value 'q'"));
 }

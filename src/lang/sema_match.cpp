@@ -1,4 +1,5 @@
-// Semantic analysis of 'match': patterns, arm types and coverage.
+// Semantic analysis of 'match': patterns and arm types. Coverage is in
+// sema_coverage.cpp.
 
 #include <cstdint>
 #include <optional>
@@ -11,66 +12,12 @@
 namespace hana::lang {
 
 using sema_util::is_untyped_literal;
+using sema_util::less_than;
+using sema_util::literal_value;
+using sema_util::LiteralValue;
 using sema_util::quoted;
 
 namespace {
-
-// '_', a plain name and a tuple of such patterns match every value.
-bool is_catch_all(const Pattern& pattern)
-{
-    if (pattern.kind == PatternKind::Tuple) {
-        for (const auto& element : pattern.arguments) {
-            if (!is_catch_all(*element)) {
-                return false;
-            }
-        }
-        return true;
-    }
-    return pattern.kind == PatternKind::Wildcard || pattern.kind == PatternKind::Binding;
-}
-
-// The value of a literal pattern as a sign and a magnitude, so literals of
-// every integer type and char compare correctly.
-struct LiteralValue {
-    bool negative = false;
-    std::uint64_t magnitude = 0;
-};
-
-std::optional<LiteralValue> literal_value(const Expr& expr)
-{
-    switch (expr.kind) {
-    case ExprKind::IntLiteral: return LiteralValue{false, static_cast<const IntLiteralExpr&>(expr).value};
-    case ExprKind::CharLiteral:
-        return LiteralValue{false, static_cast<const CharLiteralExpr&>(expr).value};
-    case ExprKind::Unary: {
-        const auto& unary = static_cast<const UnaryExpr&>(expr);
-        if (unary.op != UnaryOp::Neg || unary.operand->kind != ExprKind::IntLiteral) {
-            return std::nullopt;
-        }
-        const std::uint64_t value = static_cast<const IntLiteralExpr&>(*unary.operand).value;
-        return LiteralValue{value != 0, value};
-    }
-    default: return std::nullopt;
-    }
-}
-
-bool less_than(const LiteralValue& a, const LiteralValue& b)
-{
-    if (a.negative != b.negative) {
-        return a.negative;
-    }
-    return a.negative ? a.magnitude > b.magnitude : a.magnitude < b.magnitude;
-}
-
-// "'A', 'B'"
-std::string quoted_list(const std::vector<std::string>& names)
-{
-    std::string text;
-    for (const std::string& name : names) {
-        text += (text.empty() ? "'" : ", '") + name + "'";
-    }
-    return text;
-}
 
 // 'Rect(w, h)' for a case with fields w and h.
 std::string case_pattern_example(const EnumCase& entry)
@@ -193,8 +140,10 @@ void Sema::check_pattern(Pattern& pattern, const Type* subject)
     switch (pattern.kind) {
     case PatternKind::Wildcard: return;
     case PatternKind::Binding:
-        // A bare name that is a case of the matched enum is that case.
-        if (subject->is_enum() && subject->user->find_case(pattern.name) >= 0) {
+        // A bare name that is a case of the matched enum is that case;
+        // 'Some' without '(...)' is a malformed Option pattern.
+        if ((subject->is_enum() && subject->user->find_case(pattern.name) >= 0) ||
+            (subject->is_option() && pattern.name == "Some")) {
             pattern.kind = PatternKind::Case;
             check_case_pattern(pattern, subject);
             return;
@@ -204,6 +153,12 @@ void Sema::check_pattern(Pattern& pattern, const Type* subject)
     case PatternKind::Literal:
     case PatternKind::Range: check_literal_pattern(pattern, subject); return;
     case PatternKind::Case: check_case_pattern(pattern, subject); return;
+    case PatternKind::Null:
+        if (!subject->is_error() && !subject->is_option()) {
+            diagnostics_->error(pattern.location, "'null' only matches an Option, but the value has "
+                                                  "type " + quoted(subject));
+        }
+        return;
     case PatternKind::Tuple: check_tuple_pattern(pattern, subject); return;
     }
 }
@@ -211,6 +166,10 @@ void Sema::check_pattern(Pattern& pattern, const Type* subject)
 // 'Case' or 'Case(p, ...)': one pattern per field, in declaration order.
 void Sema::check_case_pattern(Pattern& pattern, const Type* subject)
 {
+    if (subject->is_option()) {
+        check_option_case_pattern(pattern, subject);
+        return;
+    }
     const EnumCase* entry = nullptr;
     if (!subject->is_error() && !subject->is_enum()) {
         diagnostics_->error(pattern.location, "'" + pattern.name + "' is an enum case pattern, but "
@@ -284,84 +243,6 @@ void Sema::check_literal_pattern(Pattern& pattern, const Type* subject)
             diagnostics_->error(pattern.location, "this range matches no value");
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Coverage
-
-// Every value must reach an arm. Arms with a guard may fail, so they do
-// not count. An arm after one that matches everything is an error.
-void Sema::check_match_coverage(const MatchExpr& match, const Type* subject)
-{
-    if (subject->is_error()) {
-        return;
-    }
-    if (match.arms.empty()) {
-        diagnostics_->error(match.location, "'match' needs at least one arm");
-        return;
-    }
-    bool matches_all = false;
-    std::vector<bool> covered(subject->is_enum() ? subject->user->cases.size() : 0, false);
-    bool seen_true = false;
-    bool seen_false = false;
-    for (const MatchArm& arm : match.arms) {
-        if (matches_all) {
-            diagnostics_->error(arm.location, "this arm is never reached; an earlier arm matches "
-                                              "every value");
-            continue;
-        }
-        if (arm.guard) {
-            continue;
-        }
-        const Pattern& pattern = *arm.pattern;
-        if (is_catch_all(pattern)) {
-            matches_all = true;
-        } else if (pattern.kind == PatternKind::Case && pattern.case_index >= 0) {
-            bool whole_case = true;
-            for (const auto& argument : pattern.arguments) {
-                whole_case = whole_case && is_catch_all(*argument);
-            }
-            if (whole_case) {
-                covered[static_cast<std::size_t>(pattern.case_index)] = true;
-            }
-        } else if (pattern.kind == PatternKind::Literal &&
-                   pattern.value->kind == ExprKind::BoolLiteral) {
-            (static_cast<const BoolLiteralExpr&>(*pattern.value).value ? seen_true : seen_false) =
-                true;
-        }
-    }
-    if (matches_all) {
-        return;
-    }
-    std::vector<std::string> missing;
-    if (subject->is_enum()) {
-        for (std::size_t i = 0; i < covered.size(); ++i) {
-            if (!covered[i]) {
-                missing.push_back(subject->user->cases[i].name);
-            }
-        }
-        if (missing.empty()) {
-            return;
-        }
-    } else if (subject->kind == TypeKind::Bool) {
-        if (!seen_true) {
-            missing.push_back("true");
-        }
-        if (!seen_false) {
-            missing.push_back("false");
-        }
-        if (missing.empty()) {
-            return;
-        }
-    } else {
-        diagnostics_->error(match.location, "'match' on a value of type " + quoted(subject) +
-                                                " needs a final '_' arm (or a name) for the "
-                                                "values the other arms do not cover");
-        return;
-    }
-    diagnostics_->error(match.location, "'match' does not cover " + quoted_list(missing) + "; add " +
-                                            (missing.size() == 1 ? "an arm for it" : "arms for them") +
-                                            " or a final '_' arm");
 }
 
 } // namespace hana::lang

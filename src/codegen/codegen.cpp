@@ -43,16 +43,16 @@ std::string mangle_function_name(const std::string& name)
     return "hana." + name;
 }
 
-// Read parameters of a struct, enum or tuple type that is not Copy are
-// passed by pointer, so the value is not copied; inout parameters always
-// are. Everything else, Copy values included, is passed by value: a Copy
-// argument is read before the call, so it stays correct when it overlaps an
-// inout argument.
+// Read parameters of a struct, enum, tuple or Option type that is not Copy
+// are passed by pointer, so the value is not copied; inout parameters
+// always are. Everything else, Copy values included, is passed by value: a
+// Copy argument is read before the call, so it stays correct when it
+// overlaps an inout argument.
 bool passed_by_pointer(ParamConvention convention, const Type* type)
 {
     return convention == ParamConvention::Inout ||
-           (convention == ParamConvention::Read && (type->is_user() || type->is_tuple()) &&
-            !is_copy_type(type));
+           (convention == ParamConvention::Read &&
+            (type->is_user() || type->is_tuple() || type->is_option()) && !is_copy_type(type));
 }
 
 struct LoopTargets {
@@ -121,6 +121,7 @@ private:
         case TypeKind::Struct: return struct_type(*type->user);
         case TypeKind::Enum: return enum_type(*type->user);
         case TypeKind::Tuple: return tuple_type(*type);
+        case TypeKind::Option: return option_type(*type);
         case TypeKind::Error: break;
         }
         return llvm::Type::getVoidTy(context_);
@@ -190,6 +191,13 @@ private:
             elements.push_back(llvm_type(element));
         }
         return llvm::StructType::get(context_, elements);
+    }
+
+    // An Option<T> is { i1 has_value, T value }; 'null' is all zeros.
+    llvm::StructType* option_type(const Type& option)
+    {
+        return llvm::StructType::get(context_,
+                                     {builder_.getInt1Ty(), llvm_type(option.option_value())});
     }
 
     llvm::Type* param_llvm_type(ParamConvention convention, const Type* type)
@@ -498,7 +506,7 @@ private:
         if (place_of(subject)) {
             return emit_address(subject);
         }
-        llvm::AllocaInst* temp = create_entry_alloca(subject.type, "subject");
+        llvm::AllocaInst* temp = create_entry_alloca(result_type(subject), "subject");
         builder_.CreateStore(emit_expr(subject), temp);
         return temp;
     }
@@ -523,7 +531,16 @@ private:
                                   type->elements[i], fail);
             }
             return;
+        case PatternKind::Null:
+            continue_if(builder_.CreateNot(option_has_value(type, address)), fail);
+            return;
         case PatternKind::Case: {
+            if (type->is_option()) {
+                continue_if(option_has_value(type, address), fail);
+                emit_pattern_test(*pattern.arguments.front(), option_value_address(type, address),
+                                  type->option_value(), fail);
+                return;
+            }
             const UserType& info = *type->user;
             llvm::StructType* enum_llvm = enum_type(info);
             llvm::Value* tag = builder_.CreateLoad(builder_.getInt32Ty(),
@@ -579,12 +596,28 @@ private:
         if (pattern.kind != PatternKind::Case) {
             return;
         }
+        if (type->is_option()) {
+            emit_pattern_bindings(*pattern.arguments.front(), option_value_address(type, address),
+                                  type->option_value());
+            return;
+        }
         const UserType& info = *type->user;
         const EnumCase& entry = info.cases[static_cast<std::size_t>(pattern.case_index)];
         for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
             emit_pattern_bindings(*pattern.arguments[i], case_field_address(info, entry, address, i),
                                   entry.fields[i].type);
         }
+    }
+
+    llvm::Value* option_has_value(const Type* option, llvm::Value* address)
+    {
+        return builder_.CreateLoad(builder_.getInt1Ty(),
+                                   builder_.CreateStructGEP(llvm_type(option), address, 0));
+    }
+
+    llvm::Value* option_value_address(const Type* option, llvm::Value* address)
+    {
+        return builder_.CreateStructGEP(llvm_type(option), address, 1);
     }
 
     llvm::Value* tuple_element_address(const Type* tuple, llvm::Value* address, std::size_t index)
@@ -639,7 +672,22 @@ private:
     // -----------------------------------------------------------------------
     // Expressions
 
+    // The value of the expression, wrapped into an Option where semantic
+    // analysis decided so ('let a: i32? = 5').
     llvm::Value* emit_expr(const Expr& expr)
+    {
+        llvm::Value* value = emit_expr_value(expr);
+        return expr.converted_to != nullptr ? emit_some(*expr.converted_to, value) : value;
+    }
+
+    llvm::Value* emit_some(const Type& option, llvm::Value* value)
+    {
+        llvm::Value* result = llvm::PoisonValue::get(llvm_type(&option));
+        result = builder_.CreateInsertValue(result, builder_.getInt1(true), 0);
+        return builder_.CreateInsertValue(result, value, 1);
+    }
+
+    llvm::Value* emit_expr_value(const Expr& expr)
     {
         switch (expr.kind) {
         case ExprKind::IntLiteral: return emit_int_literal(static_cast<const IntLiteralExpr&>(expr));
@@ -667,7 +715,7 @@ private:
         case ExprKind::Member: return emit_member(static_cast<const MemberExpr&>(expr));
         case ExprKind::Match: return emit_match(static_cast<const MatchExpr&>(expr), true);
         case ExprKind::Tuple: return emit_tuple(static_cast<const TupleExpr&>(expr));
-        case ExprKind::Null:
+        case ExprKind::Null: return llvm::ConstantAggregateZero::get(llvm_type(expr.type));
         case ExprKind::Error:
         case ExprKind::Index:
         case ExprKind::Try: break; // rejected by semantic analysis
@@ -769,17 +817,19 @@ private:
         if (place_of(arg)) {
             return emit_address(arg);
         }
-        llvm::AllocaInst* temp = create_entry_alloca(arg.type, "arg");
+        llvm::AllocaInst* temp = create_entry_alloca(result_type(arg), "arg");
         builder_.CreateStore(emit_expr(arg), temp);
         return temp;
     }
 
-    llvm::Value* emit_argument(ParamConvention convention, const Expr& arg)
+    // How the argument is passed follows the parameter's type: the argument
+    // may be a value wrapped into the parameter's Option type.
+    llvm::Value* emit_argument(ParamConvention convention, const Type* param_type, const Expr& arg)
     {
         if (convention == ParamConvention::Inout) {
             return emit_address(*static_cast<const UnaryExpr&>(arg).operand);
         }
-        if (passed_by_pointer(convention, arg.type)) {
+        if (passed_by_pointer(convention, param_type)) {
             return emit_pointer_argument(arg);
         }
         return emit_expr(arg);
@@ -836,6 +886,9 @@ private:
         if (binary.op == BinaryOp::And || binary.op == BinaryOp::Or) {
             return emit_logical(binary);
         }
+        if (result_type(*binary.lhs)->is_option()) {
+            return emit_null_comparison(binary);
+        }
         llvm::Value* lhs = emit_expr(*binary.lhs);
         llvm::Value* rhs = emit_expr(*binary.rhs);
         const Type* operand_type = binary.lhs->type;
@@ -848,6 +901,15 @@ private:
         case BinaryOp::Ge: return emit_comparison(binary.op, operand_type, lhs, rhs);
         default: return emit_arithmetic(binary.op, operand_type, lhs, rhs, binary.op_location);
         }
+    }
+
+    // 'x == null' / 'x != null' test whether the Option has a value. Only
+    // the side that is not 'null' is computed.
+    llvm::Value* emit_null_comparison(const BinaryExpr& binary)
+    {
+        const Expr& option = binary.lhs->kind == ExprKind::Null ? *binary.rhs : *binary.lhs;
+        llvm::Value* has_value = builder_.CreateExtractValue(emit_expr(option), 0);
+        return binary.op == BinaryOp::Eq ? builder_.CreateNot(has_value) : has_value;
     }
 
     llvm::Value* emit_logical(const BinaryExpr& binary)
@@ -1072,13 +1134,17 @@ private:
             }
         } else {
             symbol = static_cast<const NameExpr&>(*call.callee).function;
+            if (symbol->intrinsic == Intrinsic::Some) {
+                return emit_some(*call.type, emit_expr(*call.args.front()));
+            }
             if (symbol->intrinsic != Intrinsic::None) {
                 emit_print(*call.args.front(), symbol->intrinsic == Intrinsic::Print);
                 return nullptr;
             }
         }
         for (std::size_t i = 0; i < call.args.size(); ++i) {
-            args.push_back(emit_argument(symbol->conventions[i], *call.args[i]));
+            args.push_back(
+                emit_argument(symbol->conventions[i], symbol->param_types[i], *call.args[i]));
         }
         return builder_.CreateCall(functions_.at(symbol), args);
     }

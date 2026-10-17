@@ -213,3 +213,20 @@ TEST(outer_enum_case_needs_object)
 {
     EXPECT(parse("{ E: enum { A: i32 } }")->has_error("an enum case is an object"));
 }
+
+TEST(outer_option_types)
+{
+    auto r = parse("{ S: struct { a: i32?, b: Option<str> = null, c: (i32, f64)?? }, "
+                   "f: fn<i32?(x: Option<Option<i32>>)> null }");
+    EXPECT(!r->diagnostics.has_errors());
+    const TypeDecl& s = *r->module->types[0];
+    EXPECT(s.fields[0].type.is_option);
+    EXPECT(s.fields[0].type.name == "Option<i32>");
+    EXPECT(s.fields[1].type.name == "Option<str>");
+    EXPECT(s.fields[2].type.elements[0].is_option);
+    EXPECT(s.fields[2].type.elements[0].elements[0].elements.size() == 2);
+    const FnDecl& f = *r->module->functions[0];
+    EXPECT(f.return_type->name == "Option<i32>");
+    EXPECT(f.params[0].type.name == "Option<Option<i32>>");
+    EXPECT(parse("{ f: fn<(x: List<i32>)> pass }")->has_error("other than 'Option'"));
+}

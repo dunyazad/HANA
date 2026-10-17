@@ -483,8 +483,9 @@ bool CodeParser::parse_match_arm(MatchExpr& match_expr, bool is_expression)
     return true;
 }
 
-// '_', a name, a literal, a range 'a..b' / 'a..=b', or an enum case
-// 'Case' / 'Case(p, ...)' whose patterns match its fields in order.
+// '_', a name, a literal, a range 'a..b' / 'a..=b', 'null', a tuple, or an
+// enum case 'Case' / 'Case(p, ...)' whose patterns match its fields in
+// order ('Some(p)' for an Option).
 PatternPtr CodeParser::parse_pattern()
 {
     if (check(TokenKind::LParen)) {
@@ -492,6 +493,10 @@ PatternPtr CodeParser::parse_pattern()
     }
     auto pattern = std::make_unique<Pattern>();
     pattern->location = peek().location;
+    if (match(TokenKind::KwNull)) {
+        pattern->kind = PatternKind::Null;
+        return pattern;
+    }
     if (check(TokenKind::Identifier)) {
         pattern->name = advance().text;
         if (pattern->name == "_") {
@@ -922,16 +927,37 @@ ExprPtr CodeParser::unsupported(const std::string& what)
     return std::make_unique<ErrorExpr>(token.location);
 }
 
+// A type, then any number of '?' making it an Option: 'i32?'.
 std::optional<TypeExpr> CodeParser::parse_type()
+{
+    std::optional<TypeExpr> type = parse_type_without_suffix();
+    while (type && match(TokenKind::Question)) {
+        type = option_type_expr(std::move(*type));
+    }
+    return type;
+}
+
+// A name, 'Option<T>' or a tuple.
+std::optional<TypeExpr> CodeParser::parse_type_without_suffix()
 {
     if (check(TokenKind::Identifier)) {
         TypeExpr type{peek().text, peek().location};
         advance();
-        if (check(TokenKind::Lt)) {
-            error_at(peek(), "generic types are not supported yet");
+        if (!check(TokenKind::Lt)) {
+            return type;
+        }
+        if (type.name != "Option") {
+            error_at(peek(), "generic types other than 'Option' are not supported yet");
             return std::nullopt;
         }
-        return type;
+        advance(); // '<'
+        std::optional<TypeExpr> value = parse_type();
+        if (!value || !expect_type_close()) {
+            return std::nullopt;
+        }
+        TypeExpr option = option_type_expr(std::move(*value));
+        option.location = type.location;
+        return option;
     }
     if (check(TokenKind::LParen)) {
         return parse_tuple_type();
@@ -942,6 +968,27 @@ std::optional<TypeExpr> CodeParser::parse_type()
     }
     error_at(peek(), "expected a type, found " + describe_token(peek()));
     return std::nullopt;
+}
+
+// The '>' closing 'Option<...>'. In 'Option<Option<i32>>' the lexer makes one
+// '>>' token; its first half closes the inner type and its second half the
+// outer one.
+bool CodeParser::expect_type_close()
+{
+    if (split_shift_) {
+        split_shift_ = false;
+        advance();
+        return true;
+    }
+    if (match(TokenKind::Gt)) {
+        return true;
+    }
+    if (check(TokenKind::Shr)) {
+        split_shift_ = true;
+        return true;
+    }
+    error_at(peek(), "expected '>' to close 'Option<...>', found " + describe_token(peek()));
+    return false;
 }
 
 // '(' type ',' type {',' type} [','] ')'

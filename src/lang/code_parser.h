@@ -70,6 +70,8 @@ private:
     ExprPtr parse_parenthesized();
     ExprPtr unsupported(const std::string& what);
     std::optional<TypeExpr> parse_type();
+    std::optional<TypeExpr> parse_type_without_suffix();
+    bool expect_type_close();
     std::optional<TypeExpr> parse_tuple_type();
 
     // Token access
@@ -88,6 +90,8 @@ private:
     DiagnosticEngine& diagnostics_;
     std::size_t position_ = 0;
     bool panic_ = false;
+    // Set when the first '>' of a '>>' token closed a type argument.
+    bool split_shift_ = false;
 };
 
 } // namespace hana::lang

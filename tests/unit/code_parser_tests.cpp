@@ -213,3 +213,17 @@ TEST(code_parser_tuple_values_and_destructuring)
     EXPECT(grouped.init->kind == ExprKind::IntLiteral);
     EXPECT(parse_main("    let x = (1,)\n")->has_error("at least two elements"));
 }
+
+TEST(code_parser_option_types_and_patterns)
+{
+    auto r = parse_main("    let a: Option<Option<i32>> = null\n    let b: i32?? = null\n"
+                        "    match a:\n      Some(null): pass\n      null: pass\n      _: pass\n");
+    EXPECT(!r->diagnostics.has_errors());
+    const auto& first = static_cast<const LetStmt&>(*main_body(*r).statements[0]);
+    EXPECT(first.declared_type->name == "Option<Option<i32>>");
+    const auto& second = static_cast<const LetStmt&>(*main_body(*r).statements[1]);
+    EXPECT(second.declared_type->name == "Option<Option<i32>>");
+    const auto& match = *static_cast<const MatchStmt&>(*main_body(*r).statements[2]).match;
+    EXPECT(match.arms[0].pattern->arguments[0]->kind == PatternKind::Null);
+    EXPECT(match.arms[1].pattern->kind == PatternKind::Null);
+}

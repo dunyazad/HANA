@@ -50,7 +50,7 @@ const Type* Sema::tuple_type(const std::vector<const Type*>& elements)
     if (auto it = tuple_types_.find(elements); it != tuple_types_.end()) {
         return it->second;
     }
-    TupleType& tuple = program_->tuples.emplace_back();
+    ComposedType& tuple = program_->composed_types.emplace_back();
     std::vector<std::string> names;
     for (const Type* element : elements) {
         names.emplace_back(element->name);
@@ -155,6 +155,7 @@ void Sema::declare_let_pattern(Pattern& pattern, const Type* type, bool is_mutab
     case PatternKind::Literal:
     case PatternKind::Range:
     case PatternKind::Case:
+    case PatternKind::Null:
         diagnostics_->error(pattern.location, "a 'let' pattern must match every value; use "
                                               "'match' to test values");
         return;

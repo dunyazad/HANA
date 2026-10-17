@@ -623,7 +623,19 @@ bool OuterParser::parse_param(Param& param, bool& is_self)
     return true;
 }
 
+// A type, then any number of '?' making it an Option: 'i32?', '(i32, f64)?'.
 std::optional<TypeExpr> OuterParser::parse_type()
+{
+    std::optional<TypeExpr> type = parse_type_without_suffix();
+    while (type && peek() == '?') {
+        advance();
+        type = option_type_expr(std::move(*type));
+    }
+    return type;
+}
+
+// A name, 'Option<T>' or a tuple.
+std::optional<TypeExpr> OuterParser::parse_type_without_suffix()
 {
     const SourceLocation location = location_;
     if (peek() == '(') {
@@ -638,11 +650,26 @@ std::optional<TypeExpr> OuterParser::parse_type()
         }
         return std::nullopt;
     }
-    if (peek() == '<') {
-        error(location_, "generic types are not supported yet");
+    if (peek() != '<') {
+        return TypeExpr{std::move(*name), location};
+    }
+    if (*name != "Option") {
+        error(location_, "generic types other than 'Option' are not supported yet");
         return std::nullopt;
     }
-    return TypeExpr{std::move(*name), location};
+    advance(); // '<'
+    skip_trivia();
+    std::optional<TypeExpr> value = parse_type();
+    if (!value) {
+        return std::nullopt;
+    }
+    skip_trivia();
+    if (!expect_char('>', "'>' to close 'Option<...>'")) {
+        return std::nullopt;
+    }
+    TypeExpr option = option_type_expr(std::move(*value));
+    option.location = location;
+    return option;
 }
 
 // '(' type ',' type {',' type} ')': a tuple of two or more elements.

@@ -1,0 +1,21 @@
+{
+  P: struct { s: str },
+  eat: fn<(sink p: P)> pass,
+  keep: fn<(o: P?)> pass,
+  look: fn<(o: P?)> '''
+    match o:
+      Some(p): eat(p)
+      null: pass
+  ''',
+  main: fn '''
+    let p = P { s: "a" }
+    let o: P? = p
+    eat(p)
+    let q = P { s: "b" }
+    keep(q)
+    keep(q)
+    let r = P { s: "c" }
+    let s = Some(r)
+    eat(r)
+  ''',
+}

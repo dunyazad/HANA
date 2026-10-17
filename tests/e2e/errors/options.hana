@@ -1,0 +1,38 @@
+{
+  P: struct { s: str },
+  C: struct copy { o: str? },
+  L: struct { next: L? },
+  eat: fn<(sink p: P)> pass,
+  takes: fn<(inout x: i32?)> pass,
+  main: fn '''
+    let a = null
+    let b: i32 = null
+    let c: i32? = 5
+    print(c)
+    let d = c + 1
+    print(c == 5)
+    print(c < null)
+    var n = 3
+    takes(&n)
+    let e = Some(1, 2)
+    let f: u8? = 300
+    match c:
+      Some(v): pass
+    match c:
+      Some: pass
+      null: pass
+    match c:
+      Some(1): pass
+      null: pass
+    match c:
+      Some(_): pass
+      null: pass
+      Some(2): pass
+    match 5:
+      null: pass
+      _: pass
+    let p = P { s: "a" }
+    let o: P? = p
+    eat(p)
+  ''',
+}

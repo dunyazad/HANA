@@ -1,0 +1,7 @@
+option_moves.hana:7:20: error: cannot move 'p' because 'o' is a read-only parameter; declare it 'sink' to take ownership
+option_moves.hana:13:9: error: use of moved value 'p'
+option_moves.hana:12:17: note: 'p' was moved here
+option_moves.hana:16:10: error: use of moved value 'q'
+option_moves.hana:15:10: note: 'q' was moved here
+option_moves.hana:19:9: error: use of moved value 'r'
+option_moves.hana:18:18: note: 'r' was moved here

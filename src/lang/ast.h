@@ -19,12 +19,14 @@ struct TypeDecl;
 // ---------------------------------------------------------------------------
 // Types as written in source
 
-// A type as written: a name, or a tuple '(i32, f64)' whose 'name' is the
-// written text and whose 'elements' are its element types.
+// A type as written: a name; a tuple '(i32, f64)' whose 'elements' are its
+// element types; or an Option 'Option<i32>' / 'i32?' whose one element is
+// the value type. 'name' is the written text.
 struct TypeExpr {
     std::string name;
     SourceLocation location;
-    std::vector<TypeExpr> elements{}; // tuple only
+    std::vector<TypeExpr> elements{}; // tuple, or the value type of an Option
+    bool is_option = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -93,9 +95,18 @@ struct Expr {
 
     ExprKind kind;
     SourceLocation location;
-    // Set by semantic analysis.
+    // Set by semantic analysis: the type of the value the expression
+    // computes, and the Option type it is wrapped into when it stands where
+    // an Option is expected ('let a: i32? = 5'), or null.
     const Type* type = nullptr;
+    const Type* converted_to = nullptr;
 };
+
+// The type of the value an expression finally produces.
+inline const Type* result_type(const Expr& expr)
+{
+    return expr.converted_to != nullptr ? expr.converted_to : expr.type;
+}
 
 using ExprPtr = std::unique_ptr<Expr>;
 
@@ -318,6 +329,7 @@ enum class PatternKind {
     Range,    // 1..=9 or 1..10
     Case,     // an enum case: Circle(r), Empty
     Tuple,    // (a, _, 0): one pattern per element, in 'arguments'
+    Null,     // null: an Option without a value
 };
 
 struct Pattern;
@@ -554,6 +566,9 @@ struct Module {
     std::vector<std::unique_ptr<TypeDecl>> types; // structs and enums
     std::vector<std::unique_ptr<FnDecl>> functions;
 };
+
+// 'Option<T>' for the written value type T ('T?' and 'Option<T>' alike).
+TypeExpr option_type_expr(TypeExpr value);
 
 // "(i32, f64)" for the element types of a tuple.
 std::string tuple_type_text(const std::vector<std::string>& element_names);
