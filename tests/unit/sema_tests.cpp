@@ -457,3 +457,50 @@ TEST(sema_for_moves_repeat)
                  "  let p = P { s: \"a\" }\n  for i in 0..2:\n    eat(p)\n''' }")
                ->has_error("use of moved value 'p'"));
 }
+
+TEST(sema_tuple_program)
+{
+    auto r = check(R"({
+  divmod: fn<(i32, i32)(a: i32, b: i32)> (a / b, a % b),
+  f: fn<i32()> '''
+    let (q, r) = divmod(7, 2)
+    var t = divmod(9, 4)
+    t.1 += q
+    return t.0 + t.1 + r
+  ''',
+})");
+    EXPECT(!r->diagnostics.has_errors());
+}
+
+TEST(sema_tuple_types_are_shared)
+{
+    auto r = check("{ f: fn<(i32, i64)()> (1, 2), g: fn<(i32, i64)()> f() }");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(r->program->tuples.size() == 1);
+}
+
+TEST(sema_tuple_errors)
+{
+    EXPECT(check("{ f: fn '''\n  let t = (1, 2)\n  print(t.2)\n''' }")->has_error("out of range"));
+    EXPECT(check("{ f: fn '''\n  let (a, b, c) = (1, 2)\n''' }")->has_error("the pattern has 3"));
+    EXPECT(check("{ f: fn '''\n  let (a, 1) = (1, 2)\n''' }")->has_error("must match every value"));
+    EXPECT(check("{ A: struct { t: (A, i32) } }")->has_error("contains itself"));
+    EXPECT(check("{ A: struct copy { t: (i32, str) } }")->has_error("is not Copy"));
+}
+
+TEST(sema_tuple_copy_and_moves)
+{
+    // A tuple of Copy values is Copy; one with a str moves.
+    EXPECT(!check("{ eat: fn<(sink t: (i32, f64))> pass, f: fn '''\n  let t = (1, 2.0)\n  eat(t)\n  eat(t)\n''' }")
+                ->diagnostics.has_errors());
+    EXPECT(check("{ eat: fn<(sink t: (i32, str))> pass, f: fn '''\n  let t = (1, \"a\")\n  eat(t)\n  eat(t)\n''' }")
+               ->has_error("use of moved value 't'"));
+}
+
+TEST(sema_tuple_inference_through_elements)
+{
+    auto r = check("{ f: fn '''\n  var i = 0\n  let t: (i64, i32) = (i, 1)\n''' }");
+    EXPECT(!r->diagnostics.has_errors());
+    const auto& let = static_cast<const LetStmt&>(*r->module->functions[0]->body.statements[0]);
+    EXPECT(let.symbol->type->name == "i64");
+}

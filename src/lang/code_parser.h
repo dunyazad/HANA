@@ -46,6 +46,7 @@ private:
     std::unique_ptr<MatchExpr> parse_match(bool is_expression);
     bool parse_match_arm(MatchExpr& match_expr, bool is_expression);
     PatternPtr parse_pattern();
+    PatternPtr parse_tuple_pattern();
     ExprPtr parse_pattern_literal();
 
     // Expressions, lowest precedence first
@@ -69,6 +70,7 @@ private:
     ExprPtr parse_parenthesized();
     ExprPtr unsupported(const std::string& what);
     std::optional<TypeExpr> parse_type();
+    std::optional<TypeExpr> parse_tuple_type();
 
     // Token access
     const Token& peek(std::size_t ahead = 0) const;

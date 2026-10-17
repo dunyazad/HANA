@@ -15,9 +15,17 @@ using sema_util::quoted;
 
 namespace {
 
-// '_' and a plain name match every value.
+// '_', a plain name and a tuple of such patterns match every value.
 bool is_catch_all(const Pattern& pattern)
 {
+    if (pattern.kind == PatternKind::Tuple) {
+        for (const auto& element : pattern.arguments) {
+            if (!is_catch_all(*element)) {
+                return false;
+            }
+        }
+        return true;
+    }
     return pattern.kind == PatternKind::Wildcard || pattern.kind == PatternKind::Binding;
 }
 
@@ -196,6 +204,7 @@ void Sema::check_pattern(Pattern& pattern, const Type* subject)
     case PatternKind::Literal:
     case PatternKind::Range: check_literal_pattern(pattern, subject); return;
     case PatternKind::Case: check_case_pattern(pattern, subject); return;
+    case PatternKind::Tuple: check_tuple_pattern(pattern, subject); return;
     }
 }
 

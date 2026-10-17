@@ -1,0 +1,2 @@
+tuple_syntax.hana:2:14: error: a tuple needs at least two elements; '(x,)' is not a tuple
+tuple_syntax.hana:3:10: error: a tuple pattern needs at least two elements

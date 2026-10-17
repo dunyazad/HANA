@@ -75,8 +75,17 @@ void MoveChecker::walk_statement(const Stmt& stmt, State& state)
     case StmtKind::Let: {
         const auto& let = static_cast<const LetStmt&>(stmt);
         consume(*let.init, state);
-        // A loop runs the same 'let' again; each run makes a fresh variable.
+        // A loop runs the same 'let' again; each run makes fresh variables.
+        // Names from 'let (a, b) = ...' own their parts of the moved value.
         state.moved.erase(let.symbol);
+        if (let.pattern) {
+            std::vector<const VarSymbol*> bindings;
+            collect_bindings(*let.pattern, bindings);
+            for (const VarSymbol* binding : bindings) {
+                state.moved.erase(binding);
+                aliases_.erase(binding);
+            }
+        }
         break;
     }
     case StmtKind::Assign: walk_assign(static_cast<const AssignStmt&>(stmt), state); break;
@@ -242,6 +251,11 @@ void MoveChecker::use(const Expr& expr, State& state)
     case ExprKind::StructLiteral:
         for (const auto& field : static_cast<const StructLiteralExpr&>(expr).fields) {
             consume(*field.value, state);
+        }
+        return;
+    case ExprKind::Tuple:
+        for (const auto& element : static_cast<const TupleExpr&>(expr).elements) {
+            consume(*element, state);
         }
         return;
     case ExprKind::Member: use(*static_cast<const MemberExpr&>(expr).object, state); return;

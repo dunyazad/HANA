@@ -19,9 +19,12 @@ struct TypeDecl;
 // ---------------------------------------------------------------------------
 // Types as written in source
 
+// A type as written: a name, or a tuple '(i32, f64)' whose 'name' is the
+// written text and whose 'elements' are its element types.
 struct TypeExpr {
     std::string name;
     SourceLocation location;
+    std::vector<TypeExpr> elements{}; // tuple only
 };
 
 // ---------------------------------------------------------------------------
@@ -42,6 +45,7 @@ enum class ExprKind {
     Cast,
     Call,
     StructLiteral,
+    Tuple,
     Match,
     Member,
     Index,
@@ -286,6 +290,15 @@ struct IndexExpr final : Expr {
     ExprPtr index;
 };
 
+// '(a, b)': two or more elements.
+struct TupleExpr final : Expr {
+    explicit TupleExpr(SourceLocation location_value)
+        : Expr(ExprKind::Tuple, location_value)
+    {
+    }
+    std::vector<ExprPtr> elements;
+};
+
 struct TryExpr final : Expr {
     TryExpr(SourceLocation location_value, ExprPtr operand_value)
         : Expr(ExprKind::Try, location_value)
@@ -293,6 +306,35 @@ struct TryExpr final : Expr {
     {
     }
     ExprPtr operand;
+};
+
+// ---------------------------------------------------------------------------
+// Patterns of 'match' and of 'let (a, b) = ...'
+
+enum class PatternKind {
+    Wildcard, // '_'
+    Binding,  // a name: matches anything and binds it
+    Literal,  // 0, -1, 'a', true
+    Range,    // 1..=9 or 1..10
+    Case,     // an enum case: Circle(r), Empty
+    Tuple,    // (a, _, 0): one pattern per element, in 'arguments'
+};
+
+struct Pattern;
+using PatternPtr = std::unique_ptr<Pattern>;
+
+struct Pattern {
+    PatternKind kind = PatternKind::Wildcard;
+    SourceLocation location;
+    std::string name;          // Binding and Case
+    ExprPtr value;             // Literal, and the start of a Range
+    ExprPtr end;               // the end of a Range
+    bool inclusive = false;    // '..=' rather than '..'
+    bool has_arguments = false; // Case written with '(...)'
+    std::vector<PatternPtr> arguments; // Case: one per field; Tuple: one per element
+    // Set by semantic analysis.
+    const VarSymbol* symbol = nullptr; // Binding
+    int case_index = -1;               // Case
 };
 
 // ---------------------------------------------------------------------------
@@ -339,8 +381,9 @@ struct LetStmt final : Stmt {
     {
     }
     bool is_mutable = false; // 'var' instead of 'let'
-    std::string name;
+    std::string name;        // empty when 'pattern' is set
     SourceLocation name_location;
+    PatternPtr pattern;      // 'let (q, r) = ...'
     std::optional<TypeExpr> declared_type;
     ExprPtr init;
     const VarSymbol* symbol = nullptr;
@@ -392,34 +435,6 @@ struct WhileStmt final : Stmt {
     }
     ExprPtr condition;
     Block body;
-};
-
-// ---------------------------------------------------------------------------
-// Patterns of 'match'
-
-enum class PatternKind {
-    Wildcard, // '_'
-    Binding,  // a name: matches anything and binds it
-    Literal,  // 0, -1, 'a', true
-    Range,    // 1..=9 or 1..10
-    Case,     // an enum case: Circle(r), Empty
-};
-
-struct Pattern;
-using PatternPtr = std::unique_ptr<Pattern>;
-
-struct Pattern {
-    PatternKind kind = PatternKind::Wildcard;
-    SourceLocation location;
-    std::string name;          // Binding and Case
-    ExprPtr value;             // Literal, and the start of a Range
-    ExprPtr end;               // the end of a Range
-    bool inclusive = false;    // '..=' rather than '..'
-    bool has_arguments = false; // Case written with '(...)'
-    std::vector<PatternPtr> arguments; // Case: one pattern per field
-    // Set by semantic analysis.
-    const VarSymbol* symbol = nullptr; // Binding
-    int case_index = -1;               // Case
 };
 
 struct MatchArm {
@@ -539,6 +554,9 @@ struct Module {
     std::vector<std::unique_ptr<TypeDecl>> types; // structs and enums
     std::vector<std::unique_ptr<FnDecl>> functions;
 };
+
+// "(i32, f64)" for the element types of a tuple.
+std::string tuple_type_text(const std::vector<std::string>& element_names);
 
 // Indented tree, one node per line.
 std::string dump_module(const Module& module);

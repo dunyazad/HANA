@@ -179,3 +179,13 @@ TEST(code_lexer_less_than_first_line)
     auto s = lex_block("    if a:\n      b\n  c\n");
     EXPECT(s->has_error("indented less than the first line of its block"));
 }
+
+TEST(code_lexer_position_after_dot_is_an_integer)
+{
+    auto r = lex_line("p.0.1 + 0.5");
+    EXPECT(kinds_of(r->tokens) ==
+           (std::vector<TokenKind>{TokenKind::Identifier, TokenKind::Dot, TokenKind::IntLiteral,
+                                   TokenKind::Dot, TokenKind::IntLiteral, TokenKind::Plus,
+                                   TokenKind::FloatLiteral, TokenKind::Newline,
+                                   TokenKind::EndOfInput}));
+}

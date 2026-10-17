@@ -262,7 +262,8 @@ std::vector<const FieldInfo*> Sema::value_fields(const UserType& info)
     return result;
 }
 
-// A struct or enum cannot hold itself by value: its size would be infinite.
+// A struct or enum cannot hold itself by value, directly or inside a tuple:
+// its size would be infinite.
 void Sema::check_type_containment(const TypeDecl& decl)
 {
     if (decl.type == nullptr) {
@@ -270,11 +271,8 @@ void Sema::check_type_containment(const TypeDecl& decl)
     }
     const UserType& info = *decl.type->user;
     for (const FieldInfo* field : value_fields(info)) {
-        if (!field->type->is_user()) {
-            continue;
-        }
         std::vector<const UserType*> visiting;
-        if (contains_type(*field->type->user, info, visiting)) {
+        if (type_holds(field->type, info, visiting)) {
             diagnostics_->error(field->location, std::string(info.kind_word()) + " '" + info.name +
                                                      "' contains itself through field '" +
                                                      field->name + "'; " +
@@ -282,6 +280,21 @@ void Sema::check_type_containment(const TypeDecl& decl)
                                                      " cannot hold itself by value");
         }
     }
+}
+
+// True when a value of 'type' holds a value of 'inner' by value.
+bool Sema::type_holds(const Type* type, const UserType& inner,
+                      std::vector<const UserType*>& visiting) const
+{
+    if (type->is_user()) {
+        return contains_type(*type->user, inner, visiting);
+    }
+    for (const Type* element : type->elements) {
+        if (type_holds(element, inner, visiting)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool Sema::contains_type(const UserType& outer, const UserType& inner,
@@ -295,7 +308,7 @@ bool Sema::contains_type(const UserType& outer, const UserType& inner,
     }
     visiting.push_back(&outer);
     for (const FieldInfo* field : value_fields(outer)) {
-        if (field->type->is_user() && contains_type(*field->type->user, inner, visiting)) {
+        if (type_holds(field->type, inner, visiting)) {
             return true;
         }
     }
@@ -613,11 +626,31 @@ const Type* Sema::unify(const Type* a, const Type* b)
     if (b->is_literal_var && bind(b, a)) {
         return a;
     }
+    if (a->is_tuple() && b->is_tuple() && a->elements.size() == b->elements.size()) {
+        return unify_tuples(a, b);
+    }
     return nullptr;
+}
+
+// Tuples match element by element, so a placeholder inside one is bound.
+const Type* Sema::unify_tuples(const Type* a, const Type* b)
+{
+    std::vector<const Type*> elements;
+    for (std::size_t i = 0; i < a->elements.size(); ++i) {
+        const Type* element = unify(a->elements[i], b->elements[i]);
+        if (element == nullptr) {
+            return nullptr;
+        }
+        elements.push_back(element);
+    }
+    return tuple_type(elements);
 }
 
 const Type* Sema::resolve_type(const TypeExpr& type)
 {
+    if (!type.elements.empty()) {
+        return resolve_tuple_type(type);
+    }
     if (const Type* builtin = find_builtin_type(type.name)) {
         return builtin;
     }
@@ -664,6 +697,10 @@ bool Sema::check_statement(Stmt& stmt)
 
 bool Sema::check_let(LetStmt& let)
 {
+    if (let.pattern) {
+        check_destructuring_let(let);
+        return false;
+    }
     const Type* declared =
         let.declared_type ? resolve_type(*let.declared_type) : literal_variable_type(let);
     const Type* init = check_expr(*let.init, declared);
@@ -918,6 +955,7 @@ const Type* Sema::check_expr(Expr& expr, const Type* expected)
     case ExprKind::Match:
         type = check_match_expression(static_cast<MatchExpr&>(expr), expected);
         break;
+    case ExprKind::Tuple: type = check_tuple(static_cast<TupleExpr&>(expr), expected); break;
     case ExprKind::Index: type = unsupported(expr, "indexing is"); break;
     case ExprKind::Try: type = unsupported(expr, "the '?' operator is"); break;
     }
@@ -972,7 +1010,7 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
         const Type* type = check_expr(*part, nullptr);
         if (type->is_void()) {
             diagnostics_->error(part->location, "expression has no value to insert");
-        } else if (type->is_user()) {
+        } else if (type->is_user() || type->is_tuple()) {
             check_printable(type, part->location);
         }
     }
@@ -1291,6 +1329,9 @@ const Type* Sema::check_member(MemberExpr& member)
     if (object->is_error()) {
         return error_type();
     }
+    if (object->is_tuple()) {
+        return check_tuple_member(member, *object);
+    }
     if (!object->is_user()) {
         diagnostics_->error(member.location, "a value of type " + quoted(object) + " has no field '" +
                                                 member.member + "'");
@@ -1533,6 +1574,8 @@ void Sema::check_printable(const Type* type, const SourceLocation& location)
     } else if (type->is_enum()) {
         diagnostics_->error(location, "a value of type " + quoted(type) +
                                           " cannot be printed yet; use 'match' to print each case");
+    } else if (type->is_tuple()) {
+        diagnostics_->error(location, "a tuple cannot be printed yet; print its elements");
     }
 }
 

@@ -433,36 +433,34 @@ std::unique_ptr<FnDecl> OuterParser::parse_function(std::string name,
 }
 
 // '<' [return type] '(' params ')' '>'. The return type is a type name, or
-// a parenthesized list of types for several results.
+// a tuple type '(i32, i32)', which is told apart from the parameters by the
+// second parenthesized group after it.
 bool OuterParser::parse_short_signature(Signature& signature)
 {
     advance(); // '<'
     skip_trivia();
-    if (peek() == '(') {
-        if (paren_group_followed_by_paren()) {
-            error(location_, "several return values (tuples) are not supported yet");
-            return false;
-        }
+    if (peek() == '(' && !paren_group_followed_by_paren()) {
         if (!parse_param_group(signature)) {
             return false;
-        }
-    } else {
-        std::optional<TypeExpr> result = parse_type();
-        if (!result) {
-            return false;
-        }
-        if (result->name != "void") {
-            signature.return_type = std::move(result);
         }
         skip_trivia();
-        if (peek() != '(') {
-            error(location_, "expected '(' and the parameters after the return type, found " +
-                                 describe_here());
-            return false;
-        }
-        if (!parse_param_group(signature)) {
-            return false;
-        }
+        return expect_char('>', "'>' to close the function signature");
+    }
+    std::optional<TypeExpr> result = parse_type();
+    if (!result) {
+        return false;
+    }
+    if (result->name != "void") {
+        signature.return_type = std::move(result);
+    }
+    skip_trivia();
+    if (peek() != '(') {
+        error(location_, "expected '(' and the parameters after the return type, found " +
+                             describe_here());
+        return false;
+    }
+    if (!parse_param_group(signature)) {
+        return false;
     }
     skip_trivia();
     return expect_char('>', "'>' to close the function signature");
@@ -628,9 +626,12 @@ bool OuterParser::parse_param(Param& param, bool& is_self)
 std::optional<TypeExpr> OuterParser::parse_type()
 {
     const SourceLocation location = location_;
+    if (peek() == '(') {
+        return parse_tuple_type();
+    }
     std::optional<std::string> name = read_identifier();
     if (!name) {
-        if (peek() == '*' || peek() == '(' || peek() == '[') {
+        if (peek() == '*' || peek() == '[') {
             error(location_, "this kind of type is not supported yet");
         } else {
             error(location_, "expected a type, found " + describe_here());
@@ -642,6 +643,42 @@ std::optional<TypeExpr> OuterParser::parse_type()
         return std::nullopt;
     }
     return TypeExpr{std::move(*name), location};
+}
+
+// '(' type ',' type {',' type} ')': a tuple of two or more elements.
+std::optional<TypeExpr> OuterParser::parse_tuple_type()
+{
+    TypeExpr tuple;
+    tuple.location = location_;
+    advance(); // '('
+    std::vector<std::string> names;
+    for (;;) {
+        skip_trivia();
+        std::optional<TypeExpr> element = parse_type();
+        if (!element) {
+            return std::nullopt;
+        }
+        names.push_back(element->name);
+        tuple.elements.push_back(std::move(*element));
+        skip_trivia();
+        if (peek() != ',') {
+            break;
+        }
+        advance();
+        skip_trivia();
+        if (peek() == ')') {
+            break;
+        }
+    }
+    if (!expect_char(')', "')' to close the tuple type")) {
+        return std::nullopt;
+    }
+    if (tuple.elements.size() < 2) {
+        error(tuple.location, "a tuple type needs at least two elements");
+        return std::nullopt;
+    }
+    tuple.name = tuple_type_text(names);
+    return tuple;
 }
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,15 @@ const char* unary_op_spelling(UnaryOp op)
     return "?";
 }
 
+std::string tuple_type_text(const std::vector<std::string>& element_names)
+{
+    std::string text = "(";
+    for (std::size_t i = 0; i < element_names.size(); ++i) {
+        text += (i == 0 ? "" : ", ") + element_names[i];
+    }
+    return text + ")";
+}
+
 const char* param_convention_spelling(ParamConvention convention)
 {
     switch (convention) {
@@ -211,13 +220,19 @@ private:
 
     void dump_let(const LetStmt& let)
     {
-        std::string header = std::string(let.is_mutable ? "var " : "let ") + let.name;
+        std::string header = std::string(let.is_mutable ? "var " : "let ") +
+                             (let.pattern ? "(destructure)" : let.name);
         if (let.declared_type) {
             header += ": " + let.declared_type->name;
         } else if (let.symbol != nullptr && let.symbol->type != nullptr) {
             header += ": " + std::string(let.symbol->type->name) + " (inferred)";
         }
         line(header);
+        if (let.pattern) {
+            ++depth_;
+            dump_pattern(*let.pattern);
+            --depth_;
+        }
         child(*let.init);
     }
 
@@ -264,6 +279,14 @@ private:
             line(pattern.inclusive ? "pattern range ..=" : "pattern range ..");
             child(*pattern.value);
             child(*pattern.end);
+            break;
+        case PatternKind::Tuple:
+            line("pattern tuple");
+            ++depth_;
+            for (const auto& argument : pattern.arguments) {
+                dump_pattern(*argument);
+            }
+            --depth_;
             break;
         case PatternKind::Case:
             line("pattern case " + pattern.name);
@@ -359,6 +382,12 @@ private:
             break;
         }
         case ExprKind::Match: dump_match(static_cast<const MatchExpr&>(expr)); break;
+        case ExprKind::Tuple:
+            line("tuple");
+            for (const auto& element : static_cast<const TupleExpr&>(expr).elements) {
+                child(*element);
+            }
+            break;
         case ExprKind::Member: {
             const auto& member = static_cast<const MemberExpr&>(expr);
             line("member ." + member.member);

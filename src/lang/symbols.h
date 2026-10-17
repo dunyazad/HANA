@@ -52,6 +52,7 @@ struct Program {
     std::deque<VarSymbol> vars;
     std::deque<FunctionSymbol> functions;
     std::deque<UserType> types;
+    std::deque<TupleType> tuples;
     const FunctionSymbol* main = nullptr;
 };
 

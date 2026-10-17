@@ -1,0 +1,19 @@
+{
+  A: struct { t: (A, i32) },
+  C: struct copy { t: (i32, str) },
+  f: fn<(i32, i32)()> (1, 2, 3),
+  main: fn '''
+    let t = (1, 2)
+    print(t.2)
+    print(t.x)
+    print(t)
+    let (a, b, c) = t
+    let (d, 0) = t
+    let (e, f) = 5
+    t.0 = 3
+    match t:
+      (1, _): pass
+    let u: (i32, bool) = (1, 2)
+    let g = (print("x"), 1)
+  ''',
+}

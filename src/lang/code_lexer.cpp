@@ -304,9 +304,20 @@ void CodeLexer::lex_number()
         return;
     }
     consume_radix_digits(10);
+    // After '.', a number is a position as in 'pair.0.1', never '0.1'.
+    if (follows_dot()) {
+        finish_number(TokenKind::IntLiteral, location_.offset, 10);
+        return;
+    }
     bool is_float = consume_decimal_part();
     is_float = consume_exponent() || is_float;
     finish_number(is_float ? TokenKind::FloatLiteral : TokenKind::IntLiteral, location_.offset, 10);
+}
+
+bool CodeLexer::follows_dot() const
+{
+    return !tokens_.empty() && tokens_.back().kind == TokenKind::Dot &&
+           tokens_.back().location.offset + 1 == token_start_.offset;
 }
 
 void CodeLexer::finish_number(TokenKind kind, std::size_t digits_end, int radix)

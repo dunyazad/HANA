@@ -60,6 +60,7 @@ private:
     bool parse_signature_param(Signature& signature);
     bool parse_param(Param& param, bool& is_self);
     std::optional<TypeExpr> parse_type();
+    std::optional<TypeExpr> parse_tuple_type();
     std::optional<CodeRegion> parse_body();
     std::optional<CodeRegion> parse_code_block();
     std::optional<CodeRegion> parse_multiline_block(const SourceLocation& open_location);

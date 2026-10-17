@@ -75,6 +75,13 @@ bool is_copy_type(const Type* type)
     case TypeKind::Str: return false;
     case TypeKind::Struct:
     case TypeKind::Enum: return type->user->is_copy;
+    case TypeKind::Tuple:
+        for (const Type* element : type->elements) {
+            if (!is_copy_type(element)) {
+                return false;
+            }
+        }
+        return true;
     default: return true;
     }
 }

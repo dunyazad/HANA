@@ -197,3 +197,19 @@ TEST(code_parser_for_range)
     EXPECT(static_cast<const ForStmt&>(*main_body(*r).statements[1]).inclusive);
     EXPECT(parse_main("    for x in xs:\n      pass\n")->has_error("needs a range"));
 }
+
+TEST(code_parser_tuple_values_and_destructuring)
+{
+    auto r = parse_main("    let t = (1, (2, 3),)\n    let (a, (b, _)) = t\n    let g = (1)\n");
+    EXPECT(!r->diagnostics.has_errors());
+    const auto& tuple = static_cast<const TupleExpr&>(first_let_init(*r));
+    EXPECT(tuple.kind == ExprKind::Tuple);
+    EXPECT(tuple.elements.size() == 2);
+    EXPECT(tuple.elements[1]->kind == ExprKind::Tuple);
+    const auto& let = static_cast<const LetStmt&>(*main_body(*r).statements[1]);
+    EXPECT(let.pattern && let.pattern->kind == PatternKind::Tuple);
+    EXPECT(let.pattern->arguments[1]->arguments[1]->kind == PatternKind::Wildcard);
+    const auto& grouped = static_cast<const LetStmt&>(*main_body(*r).statements[2]);
+    EXPECT(grouped.init->kind == ExprKind::IntLiteral);
+    EXPECT(parse_main("    let x = (1,)\n")->has_error("at least two elements"));
+}

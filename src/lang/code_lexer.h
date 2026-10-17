@@ -47,6 +47,7 @@ private:
     void lex_newline();
     void lex_identifier();
     void lex_number();
+    bool follows_dot() const;
     void lex_char();
     void lex_string(bool is_format);
     void lex_string_segment(bool is_format, bool is_first_segment);

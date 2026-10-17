@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -55,6 +56,8 @@ private:
     void check_type_containment(const TypeDecl& decl);
     bool contains_type(const UserType& outer, const UserType& inner,
                        std::vector<const UserType*>& visiting) const;
+    bool type_holds(const Type* type, const UserType& inner,
+                    std::vector<const UserType*>& visiting) const;
     void check_copy_type(const TypeDecl& decl);
     void check_field_defaults(TypeDecl& decl);
     void check_defaults(std::vector<FieldDecl>& decls, const std::vector<FieldInfo>& fields);
@@ -73,6 +76,7 @@ private:
     const Type* literal_variable_type(const Stmt& stmt);
     bool bind(const Type* placeholder, const Type* concrete);
     const Type* unify(const Type* a, const Type* b);
+    const Type* unify_tuples(const Type* a, const Type* b);
     const Type* resolve_type(const TypeExpr& type);
 
     // Statements; each returns true when control never reaches the end.
@@ -86,6 +90,15 @@ private:
     bool check_while(WhileStmt& stmt);
     bool check_for(ForStmt& stmt);
     const Type* check_range_bounds(ForStmt& stmt);
+
+    // Tuples (sema_tuple.cpp)
+    const Type* resolve_tuple_type(const TypeExpr& type);
+    const Type* tuple_type(const std::vector<const Type*>& elements);
+    const Type* check_tuple(TupleExpr& tuple, const Type* expected);
+    const Type* check_tuple_member(MemberExpr& member, const Type& tuple);
+    void check_destructuring_let(LetStmt& let);
+    void declare_let_pattern(Pattern& pattern, const Type* type, bool is_mutable);
+    void check_tuple_pattern(Pattern& pattern, const Type* subject);
 
     // match (sema_match.cpp)
     bool check_match_statement(MatchStmt& stmt);
@@ -160,6 +173,7 @@ private:
     std::unique_ptr<Program> program_;
     std::unordered_map<std::string, const FunctionSymbol*> functions_;
     std::unordered_map<std::string, UserType*> types_;
+    std::map<std::vector<const Type*>, const Type*> tuple_types_;
     std::vector<std::unordered_map<std::string, const VarSymbol*>> scopes_;
     std::vector<LoopContext> loops_;
     const Type* return_type_ = nullptr;

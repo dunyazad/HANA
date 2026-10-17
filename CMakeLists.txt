@@ -49,6 +49,7 @@ add_library(hana_lang STATIC
     src/lang/types.cpp
     src/lang/sema.cpp
     src/lang/sema_match.cpp
+    src/lang/sema_tuple.cpp
 )
 target_link_libraries(hana_lang PUBLIC hana_support)
 target_compile_options(hana_lang PRIVATE ${HANA_WARNING_FLAGS})

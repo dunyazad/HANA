@@ -116,10 +116,19 @@ TEST(outer_use_is_parsed)
     EXPECT(s->module->functions.size() == 1);
 }
 
-TEST(outer_tuple_return_is_reported)
+TEST(outer_tuple_return_type)
 {
-    auto r = parse("{ divmod: fn<(i32, i32)(a: i32, b: i32)> a }");
-    EXPECT(r->has_error("tuples) are not supported yet"));
+    auto r = parse("{ divmod: fn<(i32, i32)(a: i32, b: i32)> (a / b, a % b), "
+                   "pair: fn<((i32, bool), f64)()> ((1, true), 2.0), "
+                   "take: fn<(t: (i32, i32))> pass }");
+    EXPECT(!r->diagnostics.has_errors());
+    const FnDecl& divmod = *r->module->functions[0];
+    EXPECT(divmod.return_type->name == "(i32, i32)");
+    EXPECT(divmod.return_type->elements.size() == 2);
+    EXPECT(divmod.params.size() == 2);
+    EXPECT(r->module->functions[1]->return_type->elements[0].elements.size() == 2);
+    EXPECT(r->module->functions[2]->params[0].type.name == "(i32, i32)");
+    EXPECT(parse("{ f: fn<(i32,)()> pass }")->has_error("at least two elements"));
 }
 
 TEST(outer_missing_comma)

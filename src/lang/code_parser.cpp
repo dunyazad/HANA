@@ -245,11 +245,17 @@ StmtPtr CodeParser::parse_let()
     auto let = std::make_unique<LetStmt>(peek().location);
     let->is_mutable = advance().kind == TokenKind::KwVar;
     let->name_location = peek().location;
-    if (!check(TokenKind::Identifier)) {
+    if (check(TokenKind::LParen)) {
+        let->pattern = parse_tuple_pattern();
+        if (!let->pattern) {
+            return nullptr;
+        }
+    } else if (check(TokenKind::Identifier)) {
+        let->name = advance().text;
+    } else {
         error_at(peek(), "expected a variable name, found " + describe_token(peek()));
         return nullptr;
     }
-    let->name = advance().text;
     if (match(TokenKind::Colon)) {
         let->declared_type = parse_type();
         if (!let->declared_type) {
@@ -481,6 +487,9 @@ bool CodeParser::parse_match_arm(MatchExpr& match_expr, bool is_expression)
 // 'Case' / 'Case(p, ...)' whose patterns match its fields in order.
 PatternPtr CodeParser::parse_pattern()
 {
+    if (check(TokenKind::LParen)) {
+        return parse_tuple_pattern();
+    }
     auto pattern = std::make_unique<Pattern>();
     pattern->location = peek().location;
     if (check(TokenKind::Identifier)) {
@@ -522,6 +531,32 @@ PatternPtr CodeParser::parse_pattern()
         if (!pattern->end) {
             return nullptr;
         }
+    }
+    return pattern;
+}
+
+// '(' pattern ',' pattern {',' pattern} [','] ')'
+PatternPtr CodeParser::parse_tuple_pattern()
+{
+    auto pattern = std::make_unique<Pattern>();
+    pattern->kind = PatternKind::Tuple;
+    pattern->location = advance().location; // '('
+    while (!check(TokenKind::RParen)) {
+        PatternPtr element = parse_pattern();
+        if (!element) {
+            return nullptr;
+        }
+        pattern->arguments.push_back(std::move(element));
+        if (!match(TokenKind::Comma)) {
+            break;
+        }
+    }
+    if (!expect(TokenKind::RParen, "')' to close the tuple pattern")) {
+        return nullptr;
+    }
+    if (pattern->arguments.size() < 2) {
+        error_at(tokens_[position_ - 1], "a tuple pattern needs at least two elements");
+        return nullptr;
     }
     return pattern;
 }
@@ -854,6 +889,7 @@ ExprPtr CodeParser::parse_format_string()
     }
 }
 
+// '(' expression ')' groups; '(' expression ',' ... ')' is a tuple.
 ExprPtr CodeParser::parse_parenthesized()
 {
     const Token& open = advance();
@@ -862,12 +898,21 @@ ExprPtr CodeParser::parse_parenthesized()
         return std::make_unique<ErrorExpr>(open.location);
     }
     ExprPtr inner = parse_expression();
-    if (check(TokenKind::Comma)) {
-        error_at(peek(), "tuples are not supported yet");
+    if (!check(TokenKind::Comma)) {
+        expect(TokenKind::RParen, "')'");
         return inner;
     }
-    expect(TokenKind::RParen, "')'");
-    return inner;
+    auto tuple = std::make_unique<TupleExpr>(open.location);
+    tuple->elements.push_back(std::move(inner));
+    while (match(TokenKind::Comma) && !check(TokenKind::RParen)) {
+        tuple->elements.push_back(parse_expression());
+    }
+    expect(TokenKind::RParen, "')' to close the tuple");
+    if (tuple->elements.size() < 2) {
+        error_at(tokens_[position_ - 1], "a tuple needs at least two elements; '(x,)' is not a "
+                                         "tuple");
+    }
+    return tuple;
 }
 
 ExprPtr CodeParser::unsupported(const std::string& what)
@@ -888,12 +933,43 @@ std::optional<TypeExpr> CodeParser::parse_type()
         }
         return type;
     }
-    if (check(TokenKind::Star) || check(TokenKind::LParen) || check(TokenKind::LBracket)) {
+    if (check(TokenKind::LParen)) {
+        return parse_tuple_type();
+    }
+    if (check(TokenKind::Star) || check(TokenKind::LBracket)) {
         error_at(peek(), "this kind of type is not supported yet");
         return std::nullopt;
     }
     error_at(peek(), "expected a type, found " + describe_token(peek()));
     return std::nullopt;
+}
+
+// '(' type ',' type {',' type} [','] ')'
+std::optional<TypeExpr> CodeParser::parse_tuple_type()
+{
+    TypeExpr tuple;
+    tuple.location = advance().location; // '('
+    std::vector<std::string> names;
+    while (!check(TokenKind::RParen)) {
+        std::optional<TypeExpr> element = parse_type();
+        if (!element) {
+            return std::nullopt;
+        }
+        names.push_back(element->name);
+        tuple.elements.push_back(std::move(*element));
+        if (!match(TokenKind::Comma)) {
+            break;
+        }
+    }
+    if (!expect(TokenKind::RParen, "')' to close the tuple type")) {
+        return std::nullopt;
+    }
+    if (tuple.elements.size() < 2) {
+        error_at(tokens_[position_ - 1], "a tuple type needs at least two elements");
+        return std::nullopt;
+    }
+    tuple.name = tuple_type_text(names);
+    return tuple;
 }
 
 // ---------------------------------------------------------------------------

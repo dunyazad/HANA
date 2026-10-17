@@ -43,14 +43,16 @@ std::string mangle_function_name(const std::string& name)
     return "hana." + name;
 }
 
-// Read parameters of a struct or enum type that is not Copy are passed by pointer,
-// so the value is not copied; inout parameters always are. Everything else,
-// Copy values included, is passed by value: a Copy argument is read before
-// the call, so it stays correct when it overlaps an inout argument.
+// Read parameters of a struct, enum or tuple type that is not Copy are
+// passed by pointer, so the value is not copied; inout parameters always
+// are. Everything else, Copy values included, is passed by value: a Copy
+// argument is read before the call, so it stays correct when it overlaps an
+// inout argument.
 bool passed_by_pointer(ParamConvention convention, const Type* type)
 {
     return convention == ParamConvention::Inout ||
-           (convention == ParamConvention::Read && type->is_user() && !is_copy_type(type));
+           (convention == ParamConvention::Read && (type->is_user() || type->is_tuple()) &&
+            !is_copy_type(type));
 }
 
 struct LoopTargets {
@@ -118,6 +120,7 @@ private:
                                     : llvm::Type::getDoubleTy(context_);
         case TypeKind::Struct: return struct_type(*type->user);
         case TypeKind::Enum: return enum_type(*type->user);
+        case TypeKind::Tuple: return tuple_type(*type);
         case TypeKind::Error: break;
         }
         return llvm::Type::getVoidTy(context_);
@@ -177,6 +180,16 @@ private:
             llvm::StructType::create(context_, fields, info.name + "." + entry.name);
         case_types_[&entry] = type;
         return type;
+    }
+
+    // A tuple is an unnamed LLVM struct of its elements.
+    llvm::StructType* tuple_type(const Type& tuple)
+    {
+        std::vector<llvm::Type*> elements;
+        for (const Type* element : tuple.elements) {
+            elements.push_back(llvm_type(element));
+        }
+        return llvm::StructType::get(context_, elements);
     }
 
     llvm::Type* param_llvm_type(ParamConvention convention, const Type* type)
@@ -318,6 +331,12 @@ private:
 
     void emit_let(const LetStmt& let)
     {
+        if (let.pattern) {
+            // 'let (a, b) = value': each name gets its part of the value.
+            llvm::Value* address = emit_subject_address(*let.init);
+            emit_pattern_bindings(*let.pattern, address, let.init->type);
+            return;
+        }
         llvm::Value* value = emit_expr(*let.init);
         llvm::AllocaInst* slot = create_entry_alloca(let.symbol->type, let.name);
         builder_.CreateStore(value, slot);
@@ -498,6 +517,12 @@ private:
             return;
         }
         case PatternKind::Range: emit_range_test(pattern, address, type, fail); return;
+        case PatternKind::Tuple:
+            for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+                emit_pattern_test(*pattern.arguments[i], tuple_element_address(type, address, i),
+                                  type->elements[i], fail);
+            }
+            return;
         case PatternKind::Case: {
             const UserType& info = *type->user;
             llvm::StructType* enum_llvm = enum_type(info);
@@ -544,6 +569,13 @@ private:
             addresses_[pattern.symbol] = slot;
             return;
         }
+        if (pattern.kind == PatternKind::Tuple) {
+            for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+                emit_pattern_bindings(*pattern.arguments[i], tuple_element_address(type, address, i),
+                                      type->elements[i]);
+            }
+            return;
+        }
         if (pattern.kind != PatternKind::Case) {
             return;
         }
@@ -553,6 +585,11 @@ private:
             emit_pattern_bindings(*pattern.arguments[i], case_field_address(info, entry, address, i),
                                   entry.fields[i].type);
         }
+    }
+
+    llvm::Value* tuple_element_address(const Type* tuple, llvm::Value* address, std::size_t index)
+    {
+        return builder_.CreateStructGEP(llvm_type(tuple), address, static_cast<unsigned>(index));
     }
 
     llvm::Value* case_field_address(const UserType& info, const EnumCase& entry,
@@ -629,6 +666,7 @@ private:
             return emit_struct_literal(static_cast<const StructLiteralExpr&>(expr));
         case ExprKind::Member: return emit_member(static_cast<const MemberExpr&>(expr));
         case ExprKind::Match: return emit_match(static_cast<const MatchExpr&>(expr), true);
+        case ExprKind::Tuple: return emit_tuple(static_cast<const TupleExpr&>(expr));
         case ExprKind::Null:
         case ExprKind::Error:
         case ExprKind::Index:
@@ -712,6 +750,16 @@ private:
             builder_.CreateStore(payload, builder_.CreateStructGEP(type, slot, 1));
         }
         return builder_.CreateLoad(type, slot);
+    }
+
+    llvm::Value* emit_tuple(const TupleExpr& tuple)
+    {
+        llvm::Value* value = llvm::PoisonValue::get(llvm_type(tuple.type));
+        for (std::size_t i = 0; i < tuple.elements.size(); ++i) {
+            value = builder_.CreateInsertValue(value, emit_expr(*tuple.elements[i]),
+                                               static_cast<unsigned>(i));
+        }
+        return value;
     }
 
     // An argument passed by pointer: a place passes its own address, any

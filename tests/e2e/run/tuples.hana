@@ -1,0 +1,56 @@
+// Tuples: types, values, '.0' access, destructuring, tuple results and
+// parameters, inout elements, nesting with structs, and tuple patterns.
+{
+  Point: struct copy { x: i32, y: i32 },
+  Named: struct { name: str, at: (i32, i32) },
+  divmod: fn<(i32, i32)(a: i32, b: i32)> (a / b, a % b),
+  swap: fn<(str, i64)(sink p: (i64, str))> '''
+    let (n, s) = p
+    return (s, n)
+  ''',
+  min_max: fn<(i64, i64)(a: i64, b: i64, c: i64)> '''
+    var lo = a
+    var hi = a
+    for v in 0..2:
+      let x = b if v == 0 else c
+      lo = x if x < lo else lo
+      hi = x if x > hi else hi
+    return (lo, hi)
+  ''',
+  bump: fn<(inout t: (i32, i32))> t.0 += 10,
+  main: fn '''
+    let (q, r) = divmod(7, 2)
+    print(f"{q} {r}")
+    let pair = divmod(9, 4)
+    print(pair.0)
+    print(pair.1)
+    let (s, n) = swap((42, "answer"))
+    print(f"{s} {n}")
+    let (lo, hi) = min_max(5, -3, 12)
+    print(f"{lo} {hi}")
+    var t = (1, 2)
+    bump(&t)
+    t.1 = 7
+    print(f"{t.0} {t.1}")
+    let nested = ((1, 2.5), Point { x: 3, y: 4 })
+    print(nested.0.1)
+    print(nested.1.y)
+    let ((a, _), p) = nested
+    print(a + p.x)
+    let w = Named { name: "w", at: (5, 6) }
+    print(w.at.1)
+    var (m, k) = (1u8, 2u8)
+    m += k
+    print(m)
+    let typed: (i64, f32) = (1, 2)
+    print(typed.1)
+    var i = 0
+    let inferred: (i64, i32) = (i, 1)
+    print(inferred.0)
+    let label = match divmod(10, 3):
+      (3, 1): "three rem one"
+      (_, 0): "exact"
+      _: "other"
+    print(label)
+  ''',
+}
