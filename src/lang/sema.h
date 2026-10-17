@@ -15,16 +15,31 @@
 namespace hana::lang {
 
 // A storage location named in source: a variable and a path of field
-// indices, as in 'p.pos.x'. Used for mutability and inout exclusivity.
+// indices, as in 'p.pos.x', where a list element is kAnyIndex. Used for
+// mutability and inout exclusivity.
 struct Place {
     const VarSymbol* root = nullptr;
     std::vector<int> path;
     const Expr* expr = nullptr;
 };
 
+// The path step of a list element 'xs[i]'. The index is not known before
+// the program runs, so it stands for every element.
+inline constexpr int kAnyIndex = -1;
+
 // Returns the place an expression names, or nothing for a temporary value.
 // The expression must have been checked.
 std::optional<Place> place_of(const Expr& expr);
+
+// Two places overlap when one contains the other: 'p' and 'p.x' do,
+// 'p.x' and 'p.y' do not. 'xs[i]' and 'xs[j]' are taken to overlap.
+bool places_overlap(const Place& a, const Place& b);
+
+// 'p.pos.x' as written; 'xs[...]' for an element.
+std::string place_text(const Expr& expr);
+
+// Where 'p.pos.x' starts; a member expression is located at its '.'.
+SourceLocation start_location(const Expr& expr);
 
 // Semantic analysis: resolves names, checks types and the rules of the
 // language (mutability, inout exclusivity, returns on every path, moves,

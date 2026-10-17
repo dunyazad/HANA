@@ -1,0 +1,12 @@
+17:18: error: cannot change 'p' while 'p.name' is in use
+17:7: note: 'p.name' is passed to 'g' here
+18:28: error: cannot change 'p' while 'p.name' is in use
+18:13: note: 'p.name' is the left operand here
+19:22: error: cannot change 'p' while it is in use
+19:11: note: 'p' is the receiver of 'label' here
+20:18: error: cannot move 'p' while it is in use
+20:10: note: 'p' is passed to 'both' here
+24:9: error: cannot change 'o' while it is in use
+23:7: note: a name in this pattern shares the data of 'o'
+28:20: error: cannot move 'q' while 'q.name' is in use
+28:7: note: 'q.name' is passed to 'g' here

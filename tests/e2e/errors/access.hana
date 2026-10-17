@@ -1,0 +1,30 @@
+{
+  P: struct {
+    name: str,
+    hp: i32 = 1,
+    rename: fn<(inout self, sink to: str)> self.name = to,
+    label: fn<str(self, n: i32)> f"{self.name} {n}",
+  },
+  h: fn<i32(inout p: P)> '''
+    p.name = "new"
+    return 1
+  ''',
+  g: fn<(s: str, n: i32)> print(s),
+  take: fn<i32(sink p: P)> 1,
+  both: fn<(a: P, n: i32)> pass,
+  main: fn '''
+    var p = P { name: "a" }
+    g(p.name, h(&p))
+    let t = p.name + f"{h(&p)}"
+    print(p.label(h(&p)))
+    both(p, take(p))
+    var o: str? = "x"
+    match o:
+      Some(v):
+        o = null
+        print(v)
+      null: pass
+    var q = P { name: "q" }
+    g(q.name, take(q))
+  ''',
+}

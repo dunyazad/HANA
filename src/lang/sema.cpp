@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "lang/access_checker.h"
 #include "lang/move_checker.h"
 #include "lang/sema_util.h"
 
@@ -59,12 +60,16 @@ const UnaryExpr* as_inout_mark(const Expr& expr)
     return unary.op == UnaryOp::InoutMark ? &unary : nullptr;
 }
 
-// 'p.pos.x' as written.
+} // namespace
+
 std::string place_text(const Expr& expr)
 {
     if (expr.kind == ExprKind::Member) {
         const auto& member = static_cast<const MemberExpr&>(expr);
         return place_text(*member.object) + "." + member.member;
+    }
+    if (expr.kind == ExprKind::Index) {
+        return place_text(*static_cast<const IndexExpr&>(expr).object) + "[...]";
     }
     if (expr.kind == ExprKind::Name) {
         return static_cast<const NameExpr&>(expr).name;
@@ -72,28 +77,30 @@ std::string place_text(const Expr& expr)
     return "<value>";
 }
 
-// Where 'p.pos.x' starts; a member expression is located at its '.'.
 SourceLocation start_location(const Expr& expr)
 {
     if (expr.kind == ExprKind::Member) {
         return start_location(*static_cast<const MemberExpr&>(expr).object);
     }
+    if (expr.kind == ExprKind::Index) {
+        return start_location(*static_cast<const IndexExpr&>(expr).object);
+    }
     return expr.location;
 }
 
-// Two places overlap when one contains the other: 'p' and 'p.x' do,
-// 'p.x' and 'p.y' do not.
 bool places_overlap(const Place& a, const Place& b)
 {
     if (a.root != b.root) {
         return false;
     }
     const std::size_t common = std::min(a.path.size(), b.path.size());
-    return std::equal(a.path.begin(), a.path.begin() + static_cast<std::ptrdiff_t>(common),
-                      b.path.begin());
+    for (std::size_t i = 0; i < common; ++i) {
+        if (a.path[i] != b.path[i] && a.path[i] != kAnyIndex && b.path[i] != kAnyIndex) {
+            return false;
+        }
+    }
+    return true;
 }
-
-} // namespace
 
 std::optional<Place> place_of(const Expr& expr)
 {
@@ -115,6 +122,14 @@ std::optional<Place> place_of(const Expr& expr)
         std::optional<Place> place = place_of(*member.object);
         if (place) {
             place->path.push_back(member.field_index);
+            place->expr = &expr;
+        }
+        return place;
+    }
+    if (expr.kind == ExprKind::Index) {
+        std::optional<Place> place = place_of(*static_cast<const IndexExpr&>(expr).object);
+        if (place) {
+            place->path.push_back(kAnyIndex);
             place->expr = &expr;
         }
         return place;
@@ -160,10 +175,11 @@ std::unique_ptr<Program> Sema::check(Module& module)
             check_function_body(*method);
         }
     }
-    // Moves are checked only on a well-typed module, so every expression
-    // has its type and every name its symbol.
+    // Moves and accesses are checked only on a well-typed module, so every
+    // expression has its type and every name its symbol.
     if (!diagnostics_->has_errors()) {
         MoveChecker(*diagnostics_).check(module);
+        AccessChecker(*diagnostics_).check(module);
     }
     return std::move(program_);
 }

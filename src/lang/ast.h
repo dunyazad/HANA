@@ -32,6 +32,14 @@ struct TypeExpr {
 // ---------------------------------------------------------------------------
 // Expressions
 
+enum class ParamConvention {
+    Read,  // no marker: read-only, never copied
+    Inout, // 'inout': modifies the caller's value
+    Sink,  // 'sink': ownership moves into the function
+};
+
+const char* param_convention_spelling(ParamConvention convention);
+
 enum class ExprKind {
     Error,
     IntLiteral,
@@ -48,6 +56,7 @@ enum class ExprKind {
     Call,
     StructLiteral,
     Tuple,
+    List,
     Match,
     Member,
     Index,
@@ -276,11 +285,26 @@ struct StructLiteralExpr final : Expr {
 // Methods every value of a type has without declaring them.
 enum class BuiltinMethod {
     None,
-    StrLen, // 's.len()': the length in bytes
-    Clone,  // 'v.clone()': a copy that owns its own data
+    StrLen,      // 's.len()': the length in bytes
+    Clone,       // 'v.clone()': a copy that owns its own data
+    ListLen,     // 'xs.len()'
+    ListIsEmpty, // 'xs.is_empty()'
+    ListPush,    // 'xs.push(v)'
+    ListPop,     // 'xs.pop()': the last element, or null
+    ListInsert,  // 'xs.insert(i, v)'
+    ListRemove,  // 'xs.remove(i)': the element at i
+    ListClear,   // 'xs.clear()'
 };
 
 // 'object.member': a field, or the callee of a method call.
+// How a built-in method takes its receiver and its arguments.
+struct BuiltinSignature {
+    ParamConvention self = ParamConvention::Read;
+    std::vector<ParamConvention> params;
+};
+
+BuiltinSignature builtin_signature(BuiltinMethod method);
+
 struct MemberExpr final : Expr {
     MemberExpr(SourceLocation location_value, ExprPtr object_value, std::string member_value)
         : Expr(ExprKind::Member, location_value)
@@ -296,6 +320,15 @@ struct MemberExpr final : Expr {
     const FunctionSymbol* method = nullptr;   // the callee of a method call
     bool is_static_call = false;              // 'Type.function(...)', no receiver
     BuiltinMethod builtin = BuiltinMethod::None; // the callee is a built-in method
+};
+
+// '[a, b, c]'
+struct ListExpr final : Expr {
+    explicit ListExpr(SourceLocation location_value)
+        : Expr(ExprKind::List, location_value)
+    {
+    }
+    std::vector<ExprPtr> elements;
 };
 
 struct IndexExpr final : Expr {
@@ -485,8 +518,10 @@ struct MatchStmt final : Stmt {
     std::unique_ptr<MatchExpr> match;
 };
 
-// 'for name in start..end:' or 'start..=end'. The bounds are computed once
-// before the loop.
+// 'for name in start..end:' or 'start..=end', or 'for name in list:'
+// with the element passed like an argument: 'for inout x in xs',
+// 'for sink x in xs'. The bounds or the list are computed once before the
+// loop.
 struct ForStmt final : Stmt {
     explicit ForStmt(SourceLocation location_value)
         : Stmt(StmtKind::For, location_value)
@@ -497,6 +532,9 @@ struct ForStmt final : Stmt {
     ExprPtr start;
     ExprPtr end;
     bool inclusive = false; // '..=' rather than '..'
+    ExprPtr iterable;       // a list; null for a range
+    ParamConvention convention = ParamConvention::Read;
+    SourceLocation convention_location;
     Block body;
     const VarSymbol* symbol = nullptr;
 };
@@ -510,14 +548,6 @@ struct SimpleStmt final : Stmt {
 
 // ---------------------------------------------------------------------------
 // Declarations
-
-enum class ParamConvention {
-    Read,  // no marker: read-only, never copied
-    Inout, // 'inout': modifies the caller's value
-    Sink,  // 'sink': ownership moves into the function
-};
-
-const char* param_convention_spelling(ParamConvention convention);
 
 struct Param {
     ParamConvention convention = ParamConvention::Read;

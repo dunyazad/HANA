@@ -73,6 +73,24 @@ const char* param_convention_spelling(ParamConvention convention)
     return "?";
 }
 
+BuiltinSignature builtin_signature(BuiltinMethod method)
+{
+    using C = ParamConvention;
+    switch (method) {
+    case BuiltinMethod::ListPush: return {C::Inout, {C::Sink}};
+    case BuiltinMethod::ListInsert: return {C::Inout, {C::Read, C::Sink}};
+    case BuiltinMethod::ListRemove: return {C::Inout, {C::Read}};
+    case BuiltinMethod::ListPop:
+    case BuiltinMethod::ListClear: return {C::Inout, {}};
+    case BuiltinMethod::None:
+    case BuiltinMethod::StrLen:
+    case BuiltinMethod::Clone:
+    case BuiltinMethod::ListLen:
+    case BuiltinMethod::ListIsEmpty: return {C::Read, {}};
+    }
+    return {C::Read, {}};
+}
+
 namespace {
 
 std::string escape(const std::string& text)

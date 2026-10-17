@@ -1,0 +1,45 @@
+{
+  P: struct {
+    name: str,
+    hp: i32 = 1,
+    rename: fn<(inout self, sink to: str)> self.name = to,
+  },
+  bump: fn<i32(inout p: P)> '''
+    p.hp += 1
+    p.name += "+"
+    return p.hp
+  ''',
+  show: fn<(s: str, n: i32)> print(f"{s} {n}"),
+  grow: fn<str(inout s: str)> '''
+    s += "!"
+    return "x"
+  ''',
+  main: fn '''
+    var p = P { name: "a" }
+    show(f"{p.hp}", bump(&p))
+    let n = p.hp + bump(&p)
+    print(n)
+    p.name = f"{bump(&p)}"
+    print(p.name)
+    p.rename(p.name.clone() + "?")
+    print(p.name)
+    var s = "s"
+    s += grow(&s)
+    print(s)
+    var o: i32? = 5
+    match o:
+      Some(v):
+        o = null
+        print(v)
+      null: pass
+    print(o == null)
+    var name: str? = "keep"
+    match name:
+      Some(_):
+        name = "replaced"
+      null: pass
+    match name:
+      Some(v): print(v)
+      null: pass
+  ''',
+}
