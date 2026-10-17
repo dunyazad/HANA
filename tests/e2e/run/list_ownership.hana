@@ -1,0 +1,105 @@
+{
+  Noisy: struct {
+    name: str,
+    drop: fn<(inout self)> print(f"drop {self.name}"),
+  },
+  Bag: struct {
+    items: List<Noisy>,
+    label: str,
+  },
+  Slot: enum {
+    Full: { item: Noisy },
+    Empty: {},
+  },
+  make: fn<Noisy(sink name: str)> Noisy { name: name },
+  names: fn<List<str>(n: i32)> '''
+    var out: List<str> = []
+    for i in 0..n:
+      out.push(f"n{i}")
+    return out
+  ''',
+  first_long: fn<str(xs: List<str>)> '''
+    for x in xs:
+      if x.len() > 2:
+        return x.clone()
+    return "none"
+  ''',
+  add_all: fn<(inout bag: Bag, sink extra: List<Noisy>)> '''
+    for sink n in extra:
+      bag.items.push(n)
+  ''',
+  main: fn '''
+    print("-- literal and scope end")
+    let a = [make("a1"), make("a2"), make("a3")]
+    print("-- overwrite element")
+    var b = [make("b1"), make("b2")]
+    b[0] = make("b1'")
+    print("-- sink break")
+    for sink n in [make("s1"), make("s2"), make("s3")]:
+      print(f"got {n.name}")
+      if n.name == "s2":
+        break
+    print("-- sink continue")
+    for sink n in [make("c1"), make("c2")]:
+      if n.name == "c1":
+        continue
+      print(f"kept {n.name}")
+    print("-- clear")
+    var c = [make("x1"), make("x2")]
+    c.clear()
+    print(c.len())
+    c.push(make("x3"))
+    print("-- pop and remove")
+    var d = [make("d1"), make("d2"), make("d3")]
+    let popped = d.pop()
+    let removed = d.remove(0)
+    print(f"{removed.name} {d.len()}")
+    d.insert(0, make("d0"))
+    d.insert(d.len(), make("d9"))
+    for n in d:
+      print(n.name)
+    print("-- empty pop")
+    var e: List<Noisy> = []
+    match e.pop():
+      Some(n): print(n.name)
+      null: print("empty")
+    print("-- strings")
+    var s = names(4)
+    s[1] += "!"
+    s.push(s[0].clone() + s[1])
+    for x in s:
+      print(x)
+    print(first_long(s))
+    print(first_long(["ab", "cd"]))
+    print("-- nested")
+    var grid: List<List<i32>> = []
+    for i in 0..3:
+      var row: List<i32> = []
+      for j in 0..3:
+        row.push(i * 3 + j)
+      grid.push(row)
+    grid[1][1] = 100
+    for row in grid:
+      print(f"{row[0]} {row[1]} {row[2]}")
+    let copy = grid.clone()
+    print(copy[1][1])
+    print("-- struct with list")
+    var bag = Bag { items: [make("i1")], label: "bag" }
+    add_all(&bag, [make("i2"), make("i3")])
+    print(bag.items.len())
+    print("-- enums")
+    var slots = [Slot.Full { item: make("e1") }, Slot.Empty]
+    match slots[0]:
+      Full(item): print(f"slot {item.name}")
+      Empty: pass
+    slots[0] = Slot.Empty
+    print("-- inout loop assign")
+    var f = [make("f1"), make("f2")]
+    for inout n in f:
+      n = make(n.name + "'")
+    print("-- temporary loop")
+    for x in names(2):
+      print(x)
+    print("-- end")
+  ''',
+}

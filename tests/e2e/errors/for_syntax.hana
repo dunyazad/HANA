@@ -1,4 +1,4 @@
 { main: fn '''
-  for x in items:
+  for inout x in 0..3:
     pass
 ''' }

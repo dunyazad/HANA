@@ -583,3 +583,43 @@ TEST(sema_no_part_of_temporary_with_drop)
                         "'drop'"));
     EXPECT(r->diagnostics.diagnostics().size() == 1);
 }
+
+TEST(sema_list_types_are_shared)
+{
+    auto r = check("{ f: fn<List<i32>(sink a: List<i32>)> '''\n  let b = [1, 2]\n  let c: List<i32> = []\n"
+                   "  return a\n''' }");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(r->program->composed_types.size() == 1);
+}
+
+TEST(sema_list_element_type_and_index_inference)
+{
+    auto r = check("{ f: fn '''\n  let x: i64 = 5\n  let xs = [1, x, 2]\n  var i = 0\n"
+                   "  let y: i64 = xs[i]\n''' }");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(check("{ f: fn '''\n  let xs = [1]\n  let i: i32 = 0\n  print(xs[i])\n''' }")
+               ->has_error("a list index has type 'usize'"));
+    EXPECT(check("{ f: fn '''\n  let xs = []\n''' }")->has_error("empty list is not known"));
+}
+
+TEST(sema_list_methods_and_loops)
+{
+    auto r = check("{ P: struct { hp: i32 }, f: fn '''\n  var ps = [P { hp: 1 }]\n"
+                   "  ps.push(P { hp: 2 })\n  ps.insert(0, P { hp: 0 })\n  let p: P = ps.remove(0)\n"
+                   "  let q: P? = ps.pop()\n  for inout x in ps:\n    x.hp += 1\n"
+                   "  for sink x in ps:\n    print(x.hp)\n''' }");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(check("{ f: fn '''\n  let xs = [1]\n  for inout x in xs:\n    pass\n''' }")
+               ->has_error("cannot loop with 'for inout' over 'xs'"));
+    EXPECT(check("{ f: fn '''\n  var xs = [1]\n  for x in xs:\n    x = 2\n''' }")
+               ->has_error("write 'for inout x in ...'"));
+}
+
+TEST(sema_list_elements_stay_in_the_list)
+{
+    EXPECT(check("{ P: struct { s: str }, f: fn '''\n  var ps = [P { s: \"a\" }]\n  let p = ps[0]\n''' }")
+               ->has_error("cannot move 'ps[...]' out of the list"));
+    EXPECT(check("{ P: struct { s: str }, f: fn '''\n  var ps = [P { s: \"a\" }]\n  for p in ps:\n"
+                 "    ps.push(P { s: \"b\" })\n''' }")
+               ->has_error("cannot change 'ps' while it is in use"));
+}

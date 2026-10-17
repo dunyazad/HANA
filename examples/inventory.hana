@@ -1,0 +1,36 @@
+{
+  Item: struct {
+    name: str,
+    count: i32 = 1,
+  },
+
+  Inventory: struct {
+    items: List<Item>,
+
+    add: fn<(inout self, sink name: str)> '''
+      for inout item in self.items:
+        if item.name == name:
+          item.count += 1
+          return
+      self.items.push(Item { name: name })
+    ''',
+
+    total: fn<i32(self)> '''
+      var sum = 0
+      for item in self.items:
+        sum += item.count
+      return sum
+    ''',
+  },
+
+  main: fn '''
+    var bag = Inventory { items: [] }
+    for name in ["apple", "pear", "apple", "fig", "apple"]:
+      bag.add(name.clone())
+    for item in bag.items:
+      print(f"{item.name}: {item.count}")
+    print(f"total {bag.total()}")
+    let first = bag.items.remove(0)
+    print(f"took {first.name}, {bag.items.len()} kinds left")
+  ''',
+}

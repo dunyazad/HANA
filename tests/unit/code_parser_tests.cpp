@@ -195,7 +195,24 @@ TEST(code_parser_for_range)
     EXPECT(!first.inclusive);
     EXPECT(first.end->kind == ExprKind::Binary);
     EXPECT(static_cast<const ForStmt&>(*main_body(*r).statements[1]).inclusive);
-    EXPECT(parse_main("    for x in xs:\n      pass\n")->has_error("needs a range"));
+    EXPECT(parse_main("    for inout i in 0..3:\n      pass\n")
+               ->has_error("'inout' is for looping over a list"));
+}
+
+TEST(code_parser_list_values_and_loops)
+{
+    auto r = parse_main("    let xs = [1, 2,\n      3,]\n    let e: List<i32> = []\n"
+                        "    for x in xs: pass\n    for inout y in xs[0..1]: pass\n");
+    EXPECT(r->has_error("expected ']'"));
+    auto ok = parse_main("    let xs = [1, 2,\n      3,]\n    let e: List<i32> = []\n"
+                         "    for sink x in xs: pass\n    for inout y in e:\n      y = xs[0]\n");
+    EXPECT(!ok->diagnostics.has_errors());
+    const auto& list = static_cast<const ListExpr&>(first_let_init(*ok));
+    EXPECT(list.elements.size() == 3);
+    const auto& sink = static_cast<const ForStmt&>(*main_body(*ok).statements[2]);
+    EXPECT(sink.iterable && sink.convention == ParamConvention::Sink && !sink.start);
+    const auto& inout = static_cast<const ForStmt&>(*main_body(*ok).statements[3]);
+    EXPECT(inout.convention == ParamConvention::Inout);
 }
 
 TEST(code_parser_tuple_values_and_destructuring)

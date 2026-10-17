@@ -52,6 +52,7 @@ add_library(hana_lang STATIC
     src/lang/sema_match.cpp
     src/lang/sema_tuple.cpp
     src/lang/sema_option.cpp
+    src/lang/sema_list.cpp
     src/lang/sema_coverage.cpp
 )
 target_link_libraries(hana_lang PUBLIC hana_support)
@@ -62,6 +63,7 @@ add_library(hana_codegen STATIC
     src/codegen/codegen.cpp
     src/codegen/codegen_match.cpp
     src/codegen/codegen_memory.cpp
+    src/codegen/codegen_list.cpp
 )
 target_link_libraries(hana_codegen PUBLIC hana_lang ${HANA_LLVM_LIBS})
 target_include_directories(hana_codegen SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})

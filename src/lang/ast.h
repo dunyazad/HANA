@@ -25,8 +25,9 @@ struct TypeDecl;
 struct TypeExpr {
     std::string name;
     SourceLocation location;
-    std::vector<TypeExpr> elements{}; // tuple, or the value type of an Option
+    std::vector<TypeExpr> elements{}; // tuple, or the value type of an Option or List
     bool is_option = false;
+    bool is_list = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -607,6 +608,10 @@ struct Module {
 
 // 'Option<T>' for the written value type T ('T?' and 'Option<T>' alike).
 TypeExpr option_type_expr(TypeExpr value);
+// 'List<T>' for the element type T.
+TypeExpr list_type_expr(TypeExpr element);
+// 'Option<T>' or 'List<T>' for a generic type name; false for other names.
+bool make_generic_type_expr(const std::string& name, TypeExpr argument, TypeExpr& out);
 
 // "(i32, f64)" for the element types of a tuple.
 std::string tuple_type_text(const std::vector<std::string>& element_names);

@@ -1,0 +1,25 @@
+{
+  P: struct { name: str },
+  main: fn '''
+    let a = []
+    let b = [1, "x"]
+    let xs = [1, 2]
+    xs.push(3)
+    let n: i32 = 1
+    print(xs[n])
+    print(xs)
+    let s = "abc"
+    print(s[0])
+    for inout x in xs:
+      pass
+    for inout y in [1, 2]:
+      pass
+    var ps = [P { name: "a" }]
+    for p in ps:
+      p.name = "b"
+    xs.push()
+    xs.nope()
+    for x in 5:
+      pass
+  ''',
+}

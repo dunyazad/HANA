@@ -2,37 +2,39 @@
 
 #include <utility>
 
+#include "lang/sema.h"
 #include "lang/types.h"
 
 namespace hana::lang {
 
 namespace {
 
-std::string place_text(const Expr& expr)
-{
-    if (expr.kind == ExprKind::Member) {
-        const auto& member = static_cast<const MemberExpr&>(expr);
-        return place_text(*member.object) + "." + member.member;
-    }
-    if (expr.kind == ExprKind::Name) {
-        return static_cast<const NameExpr&>(expr).name;
-    }
-    return "<value>";
-}
-
+// The variable or temporary value that 'p.pos.x' or 'xs[i].name' is part
+// of.
 const Expr& root_of(const Expr& expr)
 {
     if (expr.kind == ExprKind::Member) {
         return root_of(*static_cast<const MemberExpr&>(expr).object);
     }
+    if (expr.kind == ExprKind::Index) {
+        return root_of(*static_cast<const IndexExpr&>(expr).object);
+    }
     return expr;
 }
 
-// Where 'p.pos.x' starts; a member expression is located at its '.'.
-SourceLocation start_location(const Expr& expr)
+// True for a list element or a part of one, as in 'xs[i].name'.
+bool is_in_element(const Expr& expr)
 {
-    return &root_of(expr) == &expr ? expr.location : root_of(expr).location;
+    if (expr.kind == ExprKind::Index) {
+        return true;
+    }
+    if (expr.kind == ExprKind::Member) {
+        return is_in_element(*static_cast<const MemberExpr&>(expr).object);
+    }
+    return false;
 }
+
+const char* const kElementRemedy = "use '.clone()', 'pop()' or 'remove(i)'";
 
 } // namespace
 
@@ -128,6 +130,8 @@ void MoveChecker::walk_assign(const AssignStmt& assign, State& state)
         state.moved.erase(static_cast<const NameExpr&>(*assign.target).var);
     } else if (assign.target->kind == ExprKind::Member) {
         use(*static_cast<const MemberExpr&>(*assign.target).object, state);
+    } else if (assign.target->kind == ExprKind::Index) {
+        use(*assign.target, state);
     }
 }
 
@@ -148,26 +152,38 @@ void MoveChecker::walk_while(const WhileStmt& stmt, State& state)
 {
     const bool infinite = stmt.condition->kind == ExprKind::BoolLiteral &&
                           static_cast<const BoolLiteralExpr&>(*stmt.condition).value;
-    walk_loop(stmt.condition.get(), infinite, stmt.body, state);
+    walk_loop(stmt.condition.get(), infinite, stmt.body, state, nullptr);
 }
 
-// The bounds run once before the loop; the body may run zero times.
+// The bounds or the list run once before the loop; the body may run zero
+// times. 'for sink' moves the list into the loop, and each iteration's
+// variable owns a new element.
 void MoveChecker::walk_for(const ForStmt& stmt, State& state)
 {
-    use(*stmt.start, state);
-    use(*stmt.end, state);
-    walk_loop(nullptr, false, stmt.body, state);
+    if (!stmt.iterable) {
+        use(*stmt.start, state);
+        use(*stmt.end, state);
+    } else if (stmt.convention == ParamConvention::Sink) {
+        consume(*stmt.iterable, state);
+    } else {
+        use(*stmt.iterable, state);
+    }
+    walk_loop(nullptr, false, stmt.body, state, stmt.symbol);
 }
 
 // The body is walked again with the moves of the previous iteration until
 // nothing new is moved at the start of an iteration. The condition, when
 // there is one, runs before each iteration and exits the loop when false.
-void MoveChecker::walk_loop(const Expr* condition, bool infinite, const Block& body, State& state)
+void MoveChecker::walk_loop(const Expr* condition, bool infinite, const Block& body, State& state,
+                            const VarSymbol* fresh)
 {
     State head = state;
     for (;;) {
         loops_.emplace_back();
         State iteration = head;
+        if (fresh != nullptr) {
+            iteration.moved.erase(fresh);
+        }
         if (condition != nullptr) {
             use(*condition, iteration);
         }
@@ -270,6 +286,11 @@ void MoveChecker::use_value(const Expr& expr, State& state)
             consume(*element, state);
         }
         return;
+    case ExprKind::List:
+        for (const auto& element : static_cast<const ListExpr&>(expr).elements) {
+            consume(*element, state);
+        }
+        return;
     case ExprKind::Member: use(*static_cast<const MemberExpr&>(expr).object, state); return;
     case ExprKind::StringLiteral:
         for (const auto& part : static_cast<const StringLiteralExpr&>(expr).parts) {
@@ -300,8 +321,16 @@ void MoveChecker::consume(const Expr& expr, State& state)
     }
     switch (expr.kind) {
     case ExprKind::Name:
-    case ExprKind::Member: {
+    case ExprKind::Member:
+    case ExprKind::Index: {
         use_value(expr, state);
+        // An element stays in its list; taking it out is 'remove(i)'.
+        if (is_in_element(expr)) {
+            error_once(start_location(expr), "cannot move '" + place_text(expr) +
+                                                 "' out of the list; " + kElementRemedy,
+                       nullptr, {});
+            return;
+        }
         // Moving a field moves the whole variable it belongs to. A field of
         // a temporary value is taken out of it, and the rest is dropped.
         const Expr& root = root_of(expr);
@@ -325,6 +354,13 @@ void MoveChecker::consume(const Expr& expr, State& state)
 void MoveChecker::move_variable(const VarSymbol& var, const Expr& moved, State& state)
 {
     if (auto alias = aliases_.find(&var); alias != aliases_.end()) {
+        if (alias->second.in_element) {
+            error_once(start_location(moved), "cannot move '" + place_text(moved) +
+                                                  "', because it is part of a list element; " +
+                                                  kElementRemedy,
+                       nullptr, {});
+            return;
+        }
         // Moving a name bound by a pattern moves part of the matched variable.
         std::vector<const Type*> containers = alias->second.containers;
         const std::vector<const Type*> inner = member_containers(moved);
@@ -364,6 +400,12 @@ void MoveChecker::move_variable(const VarSymbol& var, const Expr& moved, State& 
                                  "' is an inout parameter; the caller still owns the value",
                    nullptr, {});
         return;
+    case VarKind::Element:
+        error_once(start_location(moved),
+                   "cannot move '" + text + "' out of the list; loop with 'for sink " + var.name +
+                       " in ...' to take the elements, or use '.clone()'",
+                   nullptr, {});
+        return;
     case VarKind::Local:
     case VarKind::SinkParam:
         if (state.reachable) {
@@ -381,6 +423,7 @@ void MoveChecker::walk_match(const MatchExpr& match, bool consuming, State& stat
 {
     use(*match.subject, state);
     const VarSymbol* root = root_variable(*match.subject);
+    const bool in_element = is_in_element(*match.subject);
     State fallthrough = state;
     State after;
     after.reachable = false;
@@ -392,7 +435,7 @@ void MoveChecker::walk_match(const MatchExpr& match, bool consuming, State& stat
         for (const BoundName& bound : bindings) {
             arm_state.moved.erase(bound.symbol);
             if (root != nullptr) {
-                aliases_[bound.symbol] = Alias{root, bound.containers};
+                aliases_[bound.symbol] = Alias{root, bound.containers, in_element};
             } else {
                 aliases_.erase(bound.symbol);
                 check_owned_binding(bound);
@@ -555,7 +598,15 @@ void MoveChecker::walk_call(const CallExpr& call, State& state)
     if (call.callee->kind == ExprKind::Member) {
         const auto& callee = static_cast<const MemberExpr&>(*call.callee);
         if (callee.builtin != BuiltinMethod::None) {
-            use(*callee.object, state); // 'len' and 'clone' read their receiver
+            use(*callee.object, state); // a list method reads or modifies its receiver
+            const BuiltinSignature signature = builtin_signature(callee.builtin);
+            for (std::size_t i = 0; i < call.args.size() && i < signature.params.size(); ++i) {
+                if (signature.params[i] == ParamConvention::Sink) {
+                    consume(*call.args[i], state);
+                } else {
+                    use(*call.args[i], state);
+                }
+            }
             return;
         }
         const FunctionSymbol& method = *callee.method;

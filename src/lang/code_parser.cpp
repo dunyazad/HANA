@@ -321,9 +321,17 @@ StmtPtr CodeParser::parse_while()
 
 // 'for' name 'in' start ('..' | '..=') end suite. The bounds are binary
 // expressions, so '0..n + 1' runs to n + 1.
+// 'for' ['inout' | 'sink'] name 'in' (range | list) suite
 StmtPtr CodeParser::parse_for()
 {
     auto stmt = std::make_unique<ForStmt>(advance().location);
+    const bool has_convention = check(TokenKind::KwInout) || check(TokenKind::KwSink);
+    const Token convention_token = peek();
+    if (has_convention) {
+        stmt->convention_location = peek().location;
+        stmt->convention =
+            advance().kind == TokenKind::KwInout ? ParamConvention::Inout : ParamConvention::Sink;
+    }
     stmt->name_location = peek().location;
     if (!check(TokenKind::Identifier)) {
         error_at(peek(), "expected a loop variable name after 'for', found " +
@@ -334,14 +342,20 @@ StmtPtr CodeParser::parse_for()
     if (!expect(TokenKind::KwIn, "'in' after the loop variable")) {
         return nullptr;
     }
-    stmt->start = parse_binary(0);
-    if (!check(TokenKind::DotDot) && !check(TokenKind::DotDotEq)) {
-        error_at(peek(), "'for' needs a range 'a..b' or 'a..=b'; looping over collections is "
-                         "not supported yet");
-        return nullptr;
+    ExprPtr first = parse_binary(0);
+    if (check(TokenKind::DotDot) || check(TokenKind::DotDotEq)) {
+        if (has_convention) {
+            error_at(convention_token,
+                     std::string("'") + param_convention_spelling(stmt->convention) +
+                         "' is for looping over a list; a range gives each number by value");
+            return nullptr;
+        }
+        stmt->start = std::move(first);
+        stmt->inclusive = advance().kind == TokenKind::DotDotEq;
+        stmt->end = parse_binary(0);
+    } else {
+        stmt->iterable = std::move(first);
     }
-    stmt->inclusive = advance().kind == TokenKind::DotDotEq;
-    stmt->end = parse_binary(0);
     if (!parse_suite(stmt->body)) {
         return nullptr;
     }
@@ -777,7 +791,7 @@ ExprPtr CodeParser::parse_primary()
         advance(); // already reported by the lexer
         panic_ = true;
         return std::make_unique<ErrorExpr>(token.location);
-    case TokenKind::LBracket: return unsupported("list literals are");
+    case TokenKind::LBracket: return parse_list_literal();
     case TokenKind::LBrace: return unsupported("object values in code are");
     case TokenKind::KwFn: return unsupported("closures are");
     case TokenKind::KwMatch:
@@ -788,6 +802,20 @@ ExprPtr CodeParser::parse_primary()
     }
     error_at(token, "expected an expression, found " + describe_token(token));
     return std::make_unique<ErrorExpr>(token.location);
+}
+
+// '[' [expression {',' expression} [',']] ']'
+ExprPtr CodeParser::parse_list_literal()
+{
+    auto list = std::make_unique<ListExpr>(advance().location);
+    while (!check(TokenKind::RBracket) && !check(TokenKind::EndOfInput)) {
+        list->elements.push_back(parse_expression());
+        if (panic_ || !match(TokenKind::Comma)) {
+            break;
+        }
+    }
+    expect(TokenKind::RBracket, "']' to close the list");
+    return list;
 }
 
 // Name ['.' Case] '{' [field ':' expression {',' field ':' expression} [',']] '}'
@@ -937,7 +965,7 @@ std::optional<TypeExpr> CodeParser::parse_type()
     return type;
 }
 
-// A name, 'Option<T>' or a tuple.
+// A name, 'Option<T>', 'List<T>' or a tuple.
 std::optional<TypeExpr> CodeParser::parse_type_without_suffix()
 {
     if (check(TokenKind::Identifier)) {
@@ -946,18 +974,19 @@ std::optional<TypeExpr> CodeParser::parse_type_without_suffix()
         if (!check(TokenKind::Lt)) {
             return type;
         }
-        if (type.name != "Option") {
-            error_at(peek(), "generic types other than 'Option' are not supported yet");
+        if (type.name != "Option" && type.name != "List") {
+            error_at(peek(), "generic types other than 'Option' and 'List' are not supported yet");
             return std::nullopt;
         }
         advance(); // '<'
-        std::optional<TypeExpr> value = parse_type();
-        if (!value || !expect_type_close()) {
+        std::optional<TypeExpr> argument = parse_type();
+        if (!argument || !expect_type_close(type.name)) {
             return std::nullopt;
         }
-        TypeExpr option = option_type_expr(std::move(*value));
-        option.location = type.location;
-        return option;
+        TypeExpr generic;
+        make_generic_type_expr(type.name, std::move(*argument), generic);
+        generic.location = type.location;
+        return generic;
     }
     if (check(TokenKind::LParen)) {
         return parse_tuple_type();
@@ -973,7 +1002,7 @@ std::optional<TypeExpr> CodeParser::parse_type_without_suffix()
 // The '>' closing 'Option<...>'. In 'Option<Option<i32>>' the lexer makes one
 // '>>' token; its first half closes the inner type and its second half the
 // outer one.
-bool CodeParser::expect_type_close()
+bool CodeParser::expect_type_close(const std::string& generic_name)
 {
     if (split_shift_) {
         split_shift_ = false;
@@ -987,7 +1016,8 @@ bool CodeParser::expect_type_close()
         split_shift_ = true;
         return true;
     }
-    error_at(peek(), "expected '>' to close 'Option<...>', found " + describe_token(peek()));
+    error_at(peek(), "expected '>' to close '" + generic_name + "<...>', found " +
+                         describe_token(peek()));
     return false;
 }
 

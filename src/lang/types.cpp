@@ -72,7 +72,8 @@ int UserType::find_case(std::string_view case_name) const
 bool is_copy_type(const Type* type)
 {
     switch (type->kind) {
-    case TypeKind::Str: return false;
+    case TypeKind::Str:
+    case TypeKind::List: return false;
     case TypeKind::Struct:
     case TypeKind::Enum: return type->user->is_copy;
     case TypeKind::Tuple:
@@ -90,7 +91,8 @@ bool is_copy_type(const Type* type)
 bool needs_drop(const Type* type)
 {
     switch (type->kind) {
-    case TypeKind::Str: return true;
+    case TypeKind::Str:
+    case TypeKind::List: return true;
     case TypeKind::Struct:
     case TypeKind::Enum: {
         const UserType& info = *type->user;
@@ -123,45 +125,63 @@ bool needs_drop(const Type* type)
     }
 }
 
-bool is_clonable(const Type* type)
+namespace {
+
+// A struct may hold a list of itself ('children: List<Node>'), so the
+// types being checked are tracked to end the recursion; a type found
+// again is clonable when the rest of it is.
+bool is_clonable_in(const Type* type, std::vector<const Type*>& checking)
 {
     if (is_copy_type(type) || type->kind == TypeKind::Str) {
         return true;
     }
+    for (const Type* outer : checking) {
+        if (outer == type) {
+            return true;
+        }
+    }
+    checking.push_back(type);
+    bool clonable = true;
     switch (type->kind) {
     case TypeKind::Struct:
     case TypeKind::Enum: {
         const UserType& info = *type->user;
         if (info.clone_method != nullptr) {
-            return true;
+            break;
         }
         if (info.drop_method != nullptr) {
-            return false;
+            clonable = false;
+            break;
         }
         for (const FieldInfo& field : info.fields) {
-            if (!is_clonable(field.type)) {
-                return false;
-            }
+            clonable = clonable && is_clonable_in(field.type, checking);
         }
         for (const EnumCase& entry : info.cases) {
             for (const FieldInfo& field : entry.fields) {
-                if (!is_clonable(field.type)) {
-                    return false;
-                }
+                clonable = clonable && is_clonable_in(field.type, checking);
             }
         }
-        return true;
+        break;
     }
     case TypeKind::Tuple:
     case TypeKind::Option:
+    case TypeKind::List:
         for (const Type* element : type->elements) {
-            if (!is_clonable(element)) {
-                return false;
-            }
+            clonable = clonable && is_clonable_in(element, checking);
         }
-        return true;
-    default: return false;
+        break;
+    default: clonable = false; break;
     }
+    checking.pop_back();
+    return clonable;
+}
+
+} // namespace
+
+bool is_clonable(const Type* type)
+{
+    std::vector<const Type*> checking;
+    return is_clonable_in(type, checking);
 }
 
 unsigned checked_bits(const Type* type)

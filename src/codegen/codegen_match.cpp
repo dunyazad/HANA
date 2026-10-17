@@ -103,8 +103,10 @@ void CodeGenerator::emit_arm_value(const MatchArm& arm, Use use, llvm::Value* re
     bool owned_by_arm = false;
     if (is_place_expr(value) && value.converted_to == nullptr) {
         const Expr* root = &value;
-        while (root->kind == ExprKind::Member) {
-            root = static_cast<const MemberExpr&>(*root).object.get();
+        while (root->kind == ExprKind::Member || root->kind == ExprKind::Index) {
+            root = root->kind == ExprKind::Member
+                       ? static_cast<const MemberExpr&>(*root).object.get()
+                       : static_cast<const IndexExpr&>(*root).object.get();
         }
         llvm::Value* address = addresses_.at(static_cast<const NameExpr&>(*root).var);
         for (const OwnedSlot& slot : arm_owned) {
@@ -131,12 +133,17 @@ llvm::Value* CodeGenerator::emit_subject_address(const Expr& subject, bool& owns
     return temp;
 }
 
-// Names bound from a matched variable are parts of it.
+// Names bound from a matched variable are parts of it. A name bound from a
+// list element is never moved (checked by the move checker), so it needs
+// no alias.
 void CodeGenerator::record_aliases(const Pattern& pattern, const Expr& subject)
 {
     std::vector<PathStep> path;
     const Expr* current = &subject;
-    while (current->kind == ExprKind::Member) {
+    while (current->kind == ExprKind::Member || current->kind == ExprKind::Index) {
+        if (current->kind == ExprKind::Index) {
+            return;
+        }
         const auto& member = static_cast<const MemberExpr&>(*current);
         PathStep step;
         step.kind = PathStep::Kind::Field;

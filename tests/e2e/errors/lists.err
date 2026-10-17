@@ -1,0 +1,17 @@
+4:13: error: the element type of an empty list is not known; write the type, as in 'let xs: List<i32> = []'
+5:14: error: expected 'str', found 'i32'
+7:5: error: cannot call 'push' on 'xs' because it modifies its value ('inout self') and 'xs' is not mutable; use 'var' to make it mutable
+6:9: note: 'xs' is declared here
+9:14: error: a list index has type 'usize', found 'i32'; convert it with 'as usize'
+10:11: error: a List cannot be printed yet; print its elements in a 'for' loop
+12:12: error: a value of type 'str' cannot be indexed; only lists can
+13:20: error: cannot loop with 'for inout' over 'xs' because it is not mutable; use 'var' to make it mutable
+6:9: note: 'xs' is declared here
+15:20: error: 'for inout' modifies the elements, so it needs a variable or a field of one
+19:7: error: cannot assign to 'p.name' because 'p' is a read-only element; write 'for inout p in ...' to modify the elements
+18:9: note: 'p' is declared here
+20:5: error: cannot call 'push' on 'xs' because it modifies its value ('inout self') and 'xs' is not mutable; use 'var' to make it mutable
+6:9: note: 'xs' is declared here
+20:12: error: 'push' expects 1 argument(s), found 0
+21:7: error: a value of type 'List<i32>' has no method 'nope'
+22:14: error: 'for' loops over a list or a range 'a..b', but the value has type 'i32'

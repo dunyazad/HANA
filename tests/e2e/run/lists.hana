@@ -1,0 +1,45 @@
+{
+  P: struct { name: str, hp: i32 = 10 },
+  Node: struct { value: i32, children: List<Node> },
+  heal: fn<(inout p: P)> p.hp += 1,
+  total: fn<i32(xs: List<i32>)> '''
+    var sum = 0
+    for x in xs:
+      sum += x
+    return sum
+  ''',
+  main: fn '''
+    var xs: List<i32> = []
+    xs.push(3)
+    xs.push(4)
+    let ys = [1, 2, 3]
+    print(total(ys))
+    print(xs.len())
+    var i = 0
+    while i < xs.len():
+      print(xs[i])
+      i += 1
+    var ps = [P { name: "a" }, P { name: "b" }]
+    ps[0].hp -= 1
+    heal(&ps[1])
+    for inout p in ps:
+      p.hp += 100
+    for p in ps:
+      print(f"{p.name} {p.hp}")
+    let last = ps.pop()
+    match last:
+      Some(p): print(p.name)
+      null: pass
+    ps.insert(0, P { name: "c" })
+    let first = ps.remove(0)
+    print(first.name)
+    print(ps.is_empty())
+    for sink p in ps:
+      print(p.name)
+    var tree = Node { value: 1, children: [] }
+    tree.children.push(Node { value: 2, children: [] })
+    print(tree.children[0].value)
+    let copy = ys.clone()
+    print(copy[2])
+  ''',
+}

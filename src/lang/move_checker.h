@@ -51,7 +51,8 @@ private:
     void walk_if(const IfStmt& stmt, State& state);
     void walk_while(const WhileStmt& stmt, State& state);
     void walk_for(const ForStmt& stmt, State& state);
-    void walk_loop(const Expr* condition, bool infinite, const Block& body, State& state);
+    void walk_loop(const Expr* condition, bool infinite, const Block& body, State& state,
+                   const VarSymbol* fresh);
     void walk_match(const MatchExpr& match, bool consuming, State& state);
     // A name bound by a pattern, and the types of the values it lies in.
     struct BoundName {
@@ -62,6 +63,7 @@ private:
     struct Alias {
         const VarSymbol* root;
         std::vector<const Type*> containers;
+        bool in_element = false; // bound from a list element, which cannot be taken apart
     };
 
     static void collect_bindings(const Pattern& pattern, std::vector<const VarSymbol*>& out);

@@ -1,1 +1,1 @@
-for_syntax.hana:2:17: error: 'for' needs a range 'a..b' or 'a..=b'; looping over collections is not supported yet
+2:7: error: 'inout' is for looping over a list; a range gives each number by value

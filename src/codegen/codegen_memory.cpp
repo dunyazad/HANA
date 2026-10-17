@@ -67,6 +67,11 @@ void CodeGenerator::own_variable(const VarSymbol* var, llvm::Value* address)
 void CodeGenerator::drop_slots(const std::vector<OwnedSlot>& slots)
 {
     for (auto it = slots.rbegin(); it != slots.rend(); ++it) {
+        if (it->start != nullptr) {
+            emit_drop_list(it->address, it->type,
+                           builder_.CreateLoad(builder_.getInt64Ty(), it->start));
+            continue;
+        }
         if (it->flag == nullptr) {
             emit_drop(it->address, it->type);
             continue;
@@ -438,6 +443,7 @@ void CodeGenerator::emit_drop_body(const Type* type, llvm::Function& function)
             emit_drop(tuple_element_address(type, address, i), type->elements[i]);
         }
         break;
+    case TypeKind::List: emit_drop_list(address, type, builder_.getInt64(0)); break;
     case TypeKind::Option: {
         auto* drop_block = llvm::BasicBlock::Create(context_, "some", &function);
         auto* end_block = llvm::BasicBlock::Create(context_, "end", &function);
@@ -503,6 +509,7 @@ void CodeGenerator::emit_clone_body(const Type* type, llvm::Function& function)
         return;
     }
     case TypeKind::Enum: builder_.CreateRet(emit_clone_enum(*type->user, address)); return;
+    case TypeKind::List: builder_.CreateRet(emit_clone_list(address, type)); return;
     case TypeKind::Option: {
         llvm::AllocaInst* result = create_entry_alloca(type, "clone");
         builder_.CreateStore(llvm::ConstantAggregateZero::get(llvm_type(type)), result);

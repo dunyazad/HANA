@@ -1,0 +1,9 @@
+{
+  main: fn '''
+    var xs = [10, 20, 30]
+    var i = 0
+    while true:
+      print(xs[i])
+      i += 1
+  ''',
+}

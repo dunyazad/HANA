@@ -59,6 +59,7 @@ private:
         Assign,        // 'p.x = 1'
         PassInout,     // 'f(&p)'
         InoutReceiver, // 'p.damage(1)' where damage takes 'inout self'
+        InoutLoop,     // 'for inout x in xs'
     };
 
     // Declarations
@@ -118,6 +119,14 @@ private:
     const Type* check_some_call(CallExpr& call, const Type* expected);
     const Type* check_option_comparison(BinaryExpr& binary);
     void check_option_case_pattern(Pattern& pattern, const Type* subject);
+
+    // Lists (sema_list.cpp)
+    const Type* list_type(const Type* element);
+    const Type* check_list(ListExpr& list, const Type* expected);
+    const Type* check_index(IndexExpr& index);
+    std::vector<const Type*> builtin_param_types(BuiltinMethod builtin, const Type* receiver);
+    const Type* builtin_result_type(BuiltinMethod builtin, const Type* receiver);
+    bool check_list_for(ForStmt& stmt);
 
     // Tuples (sema_tuple.cpp)
     const Type* resolve_tuple_type(const TypeExpr& type);
@@ -207,6 +216,7 @@ private:
     std::unordered_map<std::string, UserType*> types_;
     std::map<std::vector<const Type*>, const Type*> tuple_types_;
     std::unordered_map<const Type*, const Type*> option_types_;
+    std::unordered_map<const Type*, const Type*> list_types_;
     std::vector<std::unordered_map<std::string, const VarSymbol*>> scopes_;
     std::vector<LoopContext> loops_;
     const Type* return_type_ = nullptr;

@@ -9,6 +9,7 @@
 
 namespace hana::lang {
 
+using sema_util::as_inout_mark;
 using sema_util::is_untyped_literal;
 using sema_util::quoted;
 
@@ -49,15 +50,6 @@ std::uint64_t max_magnitude(const Type* type, bool negated)
     }
     const std::uint64_t limit = std::uint64_t{1} << (bits - 1);
     return negated ? limit : limit - 1;
-}
-
-const UnaryExpr* as_inout_mark(const Expr& expr)
-{
-    if (expr.kind != ExprKind::Unary) {
-        return nullptr;
-    }
-    const auto& unary = static_cast<const UnaryExpr&>(expr);
-    return unary.op == UnaryOp::InoutMark ? &unary : nullptr;
 }
 
 } // namespace
@@ -308,12 +300,16 @@ void Sema::check_type_containment(const TypeDecl& decl)
     }
 }
 
-// True when a value of 'type' holds a value of 'inner' by value.
+// True when a value of 'type' holds a value of 'inner' by value. A list
+// keeps its elements elsewhere, so 'children: List<Node>' is fine.
 bool Sema::type_holds(const Type* type, const UserType& inner,
                       std::vector<const UserType*>& visiting) const
 {
     if (type->is_user()) {
         return contains_type(*type->user, inner, visiting);
+    }
+    if (type->is_list()) {
+        return false;
     }
     for (const Type* element : type->elements) {
         if (type_holds(element, inner, visiting)) {
@@ -609,7 +605,7 @@ void Sema::collect_pending_vars(Block& block)
         case StmtKind::While: collect_pending_vars(static_cast<WhileStmt&>(*statement).body); break;
         case StmtKind::For: {
             auto& loop = static_cast<ForStmt&>(*statement);
-            if (is_untyped_literal(*loop.start) && is_untyped_literal(*loop.end)) {
+            if (!loop.iterable && is_untyped_literal(*loop.start) && is_untyped_literal(*loop.end)) {
                 pending_.push_back(PendingVar{&loop, false});
             }
             collect_pending_vars(loop.body);
@@ -715,6 +711,10 @@ const Type* Sema::resolve_type(const TypeExpr& type)
         const Type* value = resolve_type(type.elements.front());
         return value->is_error() ? value : option_type(value);
     }
+    if (type.is_list) {
+        const Type* element = resolve_type(type.elements.front());
+        return element->is_error() ? element : list_type(element);
+    }
     if (!type.elements.empty()) {
         return resolve_tuple_type(type);
     }
@@ -799,11 +799,12 @@ bool Sema::check_assign(AssignStmt& assign)
 // A target is a variable or a field path of one: 'x', 'p.pos.x'.
 const Type* Sema::check_assignment_target(Expr& target)
 {
-    if (target.kind != ExprKind::Name && target.kind != ExprKind::Member) {
+    if (target.kind != ExprKind::Name && target.kind != ExprKind::Member &&
+        target.kind != ExprKind::Index) {
         if (target.kind != ExprKind::Error) {
             check_expr(target, nullptr);
-            diagnostics_->error(target.location,
-                               "only variables and their fields can be assigned to for now");
+            diagnostics_->error(target.location, "only variables, their fields and list elements "
+                                                 "can be assigned to");
         }
         return error_type();
     }
@@ -813,7 +814,7 @@ const Type* Sema::check_assignment_target(Expr& target)
     }
     std::optional<Place> place = place_of(target);
     if (!place) {
-        diagnostics_->error(target.location, "cannot assign to a field of a temporary value");
+        diagnostics_->error(target.location, "cannot assign to a part of a temporary value");
         return type;
     }
     require_mutable(*place, MutationKind::Assign, {});
@@ -835,6 +836,8 @@ void Sema::require_mutable(const Place& place, MutationKind kind, const std::str
         remedy = "declare the method with 'inout self' to modify the value it is called on";
     } else if (is_param) {
         remedy = "declare it 'inout' to modify the caller's value";
+    } else if (var.kind == VarKind::Element) {
+        remedy = "write 'for inout " + var.name + " in ...' to modify the elements";
     } else if (var.is_loop_variable) {
         remedy = "the variable of a 'for' loop cannot be changed; copy it into a 'var' first";
     } else {
@@ -845,20 +848,28 @@ void Sema::require_mutable(const Place& place, MutationKind kind, const std::str
     case MutationKind::Assign:
         if (whole && is_param) {
             message = "cannot assign to parameter '" + var.name + "'; " + remedy;
-        } else if (whole && var.is_loop_variable) {
+        } else if (whole && (var.is_loop_variable || var.kind == VarKind::Element)) {
             message = "cannot assign to '" + var.name + "'; " + remedy;
         } else if (whole) {
             message = "cannot assign to '" + var.name + "' because it is declared with 'let'; " +
                       remedy;
         } else {
             message = "cannot assign to '" + text + "' because '" + var.name + "' is " +
-                      (is_param ? "a read-only parameter; " : "declared with 'let'; ") + remedy;
+                      (is_param                          ? "a read-only parameter; "
+                       : var.kind == VarKind::Element ? "a read-only element; "
+                                                      : "declared with 'let'; ") +
+                      remedy;
         }
         break;
     case MutationKind::PassInout:
         message = "cannot pass '" + text + "' as inout because " +
                   (whole ? std::string("it is not mutable")
                          : "'" + var.name + "' is not mutable");
+        break;
+    case MutationKind::InoutLoop:
+        message = "cannot loop with 'for inout' over '" + text + "' because " +
+                  (whole ? std::string("it is not mutable") : "'" + var.name + "' is not mutable") +
+                  "; " + remedy;
         break;
     case MutationKind::InoutReceiver:
         message = "cannot call '" + method_name + "' on '" + text +
@@ -925,6 +936,9 @@ bool Sema::check_while(WhileStmt& stmt)
 // A 'for' loop always ends, so it never makes the code after it unreachable.
 bool Sema::check_for(ForStmt& stmt)
 {
+    if (stmt.iterable) {
+        return check_list_for(stmt);
+    }
     const Type* type = check_range_bounds(stmt);
     loops_.push_back(LoopContext{});
     push_scope();
@@ -1030,7 +1044,8 @@ const Type* Sema::check_expr_value(Expr& expr, const Type* expected)
         type = check_match_expression(static_cast<MatchExpr&>(expr), expected);
         break;
     case ExprKind::Tuple: type = check_tuple(static_cast<TupleExpr&>(expr), expected); break;
-    case ExprKind::Index: type = unsupported(expr, "indexing is"); break;
+    case ExprKind::List: type = check_list(static_cast<ListExpr&>(expr), expected); break;
+    case ExprKind::Index: type = check_index(static_cast<IndexExpr&>(expr)); break;
     case ExprKind::Try: type = unsupported(expr, "the '?' operator is"); break;
     }
     expr.type = type;
@@ -1078,7 +1093,7 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
         const Type* type = check_expr(*part, nullptr);
         if (type->is_void()) {
             diagnostics_->error(part->location, "expression has no value to insert");
-        } else if (type->is_user() || type->is_tuple() || type->is_option()) {
+        } else if (type->is_user() || type->is_tuple() || type->is_option() || type->is_list()) {
             check_printable(type, part->location);
         }
     }
@@ -1563,37 +1578,6 @@ const FunctionSymbol* Sema::find_static_function(MemberExpr& callee, const UserT
     return it->second;
 }
 
-// The built-in method a call like 'v.len()' names, unless the type has a
-// method of that name the user wrote.
-BuiltinMethod Sema::builtin_method(const Type* receiver, const std::string& name)
-{
-    if (receiver->is_error() ||
-        (receiver->is_user() && receiver->user->methods.count(name) != 0)) {
-        return BuiltinMethod::None;
-    }
-    if (name == "len" && receiver->kind == TypeKind::Str) {
-        return BuiltinMethod::StrLen;
-    }
-    if (name == "clone" && is_clonable(receiver)) {
-        return BuiltinMethod::Clone;
-    }
-    return BuiltinMethod::None;
-}
-
-// Built-in methods read their receiver and take no arguments.
-const Type* Sema::check_builtin_method_call(CallExpr& call, MemberExpr& callee,
-                                            BuiltinMethod builtin, const Type* receiver)
-{
-    callee.type = void_type();
-    callee.builtin = builtin;
-    if (!call.args.empty()) {
-        diagnostics_->error(call.location, "'" + callee.member + "' takes no arguments");
-        check_args_without_callee(call);
-        return error_type();
-    }
-    return builtin == BuiltinMethod::StrLen ? find_builtin_type("usize") : receiver;
-}
-
 const FunctionSymbol* Sema::find_method(MemberExpr& callee, const Type* receiver)
 {
     if (receiver->is_error()) {
@@ -1697,6 +1681,9 @@ void Sema::check_printable(const Type* type, const SourceLocation& location)
     } else if (type->is_option()) {
         diagnostics_->error(location, "an Option cannot be printed yet; use 'match' to print its "
                                       "value");
+    } else if (type->is_list()) {
+        diagnostics_->error(location, "a List cannot be printed yet; print its elements in a "
+                                      "'for' loop");
     }
 }
 

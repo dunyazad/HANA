@@ -16,6 +16,7 @@ enum class VarKind {
     Param,      // read parameter: may be read only
     SinkParam,  // sink parameter: owned by the function
     InoutParam, // inout parameter: refers to the caller's storage
+    Element,    // 'for x in xs' / 'for inout x in xs': an element of the list
 };
 
 struct VarSymbol {

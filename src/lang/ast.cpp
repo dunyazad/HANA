@@ -54,6 +54,29 @@ TypeExpr option_type_expr(TypeExpr value)
     return option;
 }
 
+TypeExpr list_type_expr(TypeExpr element)
+{
+    TypeExpr list;
+    list.name = "List<" + element.name + ">";
+    list.location = element.location;
+    list.is_list = true;
+    list.elements.push_back(std::move(element));
+    return list;
+}
+
+bool make_generic_type_expr(const std::string& name, TypeExpr argument, TypeExpr& out)
+{
+    if (name == "Option") {
+        out = option_type_expr(std::move(argument));
+        return true;
+    }
+    if (name == "List") {
+        out = list_type_expr(std::move(argument));
+        return true;
+    }
+    return false;
+}
+
 std::string tuple_type_text(const std::vector<std::string>& element_names)
 {
     std::string text = "(";
@@ -229,13 +252,22 @@ private:
         }
         case StmtKind::For: {
             const auto& loop = static_cast<const ForStmt&>(stmt);
-            std::string header = "for " + loop.name;
+            std::string header = "for ";
+            if (loop.convention != ParamConvention::Read) {
+                header += std::string(param_convention_spelling(loop.convention)) + " ";
+            }
+            header += loop.name;
             if (loop.symbol != nullptr && loop.symbol->type != nullptr) {
                 header += ": " + std::string(loop.symbol->type->name);
             }
-            line(header + (loop.inclusive ? " in ..=" : " in .."));
-            child(*loop.start);
-            child(*loop.end);
+            if (loop.iterable) {
+                line(header + " in");
+                child(*loop.iterable);
+            } else {
+                line(header + (loop.inclusive ? " in ..=" : " in .."));
+                child(*loop.start);
+                child(*loop.end);
+            }
             nested(loop.body);
             break;
         }
@@ -414,6 +446,12 @@ private:
         case ExprKind::Tuple:
             line("tuple");
             for (const auto& element : static_cast<const TupleExpr&>(expr).elements) {
+                child(*element);
+            }
+            break;
+        case ExprKind::List:
+            line("list");
+            for (const auto& element : static_cast<const ListExpr&>(expr).elements) {
                 child(*element);
             }
             break;

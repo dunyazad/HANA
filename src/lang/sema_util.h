@@ -10,6 +10,16 @@
 // Small helpers shared by the files of semantic analysis.
 namespace hana::lang::sema_util {
 
+// The '&' of an inout argument, or null.
+inline const UnaryExpr* as_inout_mark(const Expr& expr)
+{
+    if (expr.kind != ExprKind::Unary) {
+        return nullptr;
+    }
+    const auto& unary = static_cast<const UnaryExpr&>(expr);
+    return unary.op == UnaryOp::InoutMark ? &unary : nullptr;
+}
+
 // An integer or float literal without a suffix, possibly negated.
 inline bool is_untyped_literal(const Expr& expr)
 {

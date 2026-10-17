@@ -1,0 +1,35 @@
+{
+  P: struct { name: str },
+  take: fn<(sink p: P)> pass,
+  grow: fn<i32(inout xs: List<P>)> '''
+    xs.push(P { name: "g" })
+    return 0
+  ''',
+  main: fn '''
+    var ps = [P { name: "a" }]
+    let a = ps[0]
+    take(ps[0])
+    let n = ps[0].name
+    for p in ps:
+      take(p)
+    for inout p in ps:
+      take(p)
+    for p in ps:
+      ps.push(P { name: "x" })
+    for inout p in ps:
+      let moved = ps
+    var opt: List<str?> = ["s"]
+    match opt[0]:
+      Some(v): print(v)
+      null: pass
+    match opt[0]:
+      Some(v): eat(v)
+      null: pass
+    ps[0].name = ps[grow(&ps) as usize].name.clone()
+    let k = ps[grow(&ps) as usize].name.len()
+    for sink p in ps:
+      take(p)
+    print(ps.len())
+  ''',
+  eat: fn<(sink s: str)> pass,
+}

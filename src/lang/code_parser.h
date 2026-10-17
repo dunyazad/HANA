@@ -61,6 +61,7 @@ private:
     ExprPtr parse_postfix(ExprPtr expr);
     ExprPtr parse_call(ExprPtr callee);
     ExprPtr parse_primary();
+    ExprPtr parse_list_literal();
     ExprPtr parse_struct_literal();
     ExprPtr parse_int_literal();
     ExprPtr parse_float_literal();
@@ -71,7 +72,7 @@ private:
     ExprPtr unsupported(const std::string& what);
     std::optional<TypeExpr> parse_type();
     std::optional<TypeExpr> parse_type_without_suffix();
-    bool expect_type_close();
+    bool expect_type_close(const std::string& generic_name);
     std::optional<TypeExpr> parse_tuple_type();
 
     // Token access

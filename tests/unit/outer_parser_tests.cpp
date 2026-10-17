@@ -228,5 +228,10 @@ TEST(outer_option_types)
     const FnDecl& f = *r->module->functions[0];
     EXPECT(f.return_type->name == "Option<i32>");
     EXPECT(f.params[0].type.name == "Option<Option<i32>>");
-    EXPECT(parse("{ f: fn<(x: List<i32>)> pass }")->has_error("other than 'Option'"));
+    EXPECT(parse("{ f: fn<(x: Map<i32>)> pass }")->has_error("other than 'Option' and 'List'"));
+    auto lists = parse("{ f: fn<List<List<i32>>(x: List<str?>)> pass }");
+    EXPECT(!lists->diagnostics.has_errors());
+    const FnDecl& g = *lists->module->functions[0];
+    EXPECT(g.return_type->is_list && g.return_type->name == "List<List<i32>>");
+    EXPECT(g.params[0].type.is_list && g.params[0].type.elements[0].is_option);
 }

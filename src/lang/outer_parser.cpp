@@ -634,7 +634,7 @@ std::optional<TypeExpr> OuterParser::parse_type()
     return type;
 }
 
-// A name, 'Option<T>' or a tuple.
+// A name, 'Option<T>', 'List<T>' or a tuple.
 std::optional<TypeExpr> OuterParser::parse_type_without_suffix()
 {
     const SourceLocation location = location_;
@@ -653,23 +653,25 @@ std::optional<TypeExpr> OuterParser::parse_type_without_suffix()
     if (peek() != '<') {
         return TypeExpr{std::move(*name), location};
     }
-    if (*name != "Option") {
-        error(location_, "generic types other than 'Option' are not supported yet");
+    if (*name != "Option" && *name != "List") {
+        error(location_, "generic types other than 'Option' and 'List' are not supported yet");
         return std::nullopt;
     }
     advance(); // '<'
     skip_trivia();
-    std::optional<TypeExpr> value = parse_type();
-    if (!value) {
+    std::optional<TypeExpr> argument = parse_type();
+    if (!argument) {
         return std::nullopt;
     }
     skip_trivia();
-    if (!expect_char('>', "'>' to close 'Option<...>'")) {
+    const std::string close = "'>' to close '" + *name + "<...>'";
+    if (!expect_char('>', close.c_str())) {
         return std::nullopt;
     }
-    TypeExpr option = option_type_expr(std::move(*value));
-    option.location = location;
-    return option;
+    TypeExpr generic;
+    make_generic_type_expr(*name, std::move(*argument), generic);
+    generic.location = location;
+    return generic;
 }
 
 // '(' type ',' type {',' type} ')': a tuple of two or more elements.

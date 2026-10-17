@@ -22,6 +22,7 @@ enum class TypeKind {
     Enum,
     Tuple,
     Option, // Option<T>: 'elements' holds T
+    List,   // List<T>: 'elements' holds T
 };
 
 struct UserType;
@@ -37,7 +38,7 @@ struct Type {
     // with an untyped literal ('var i = 0'). Never survives semantic analysis.
     bool is_literal_var = false;
     const UserType* user = nullptr; // for Struct and Enum
-    std::vector<const Type*> elements{}; // for Tuple, and T of Option<T>
+    std::vector<const Type*> elements{}; // for Tuple, and T of Option<T> and List<T>
 
     bool is_error() const { return kind == TypeKind::Error; }
     bool is_void() const { return kind == TypeKind::Void; }
@@ -49,8 +50,11 @@ struct Type {
     bool is_user() const { return is_struct() || is_enum(); }
     bool is_tuple() const { return kind == TypeKind::Tuple; }
     bool is_option() const { return kind == TypeKind::Option; }
+    bool is_list() const { return kind == TypeKind::List; }
     // T of Option<T>.
     const Type* option_value() const { return elements.front(); }
+    // T of List<T>.
+    const Type* list_element() const { return elements.front(); }
 };
 
 struct FunctionSymbol;
@@ -92,10 +96,10 @@ struct UserType {
     int find_case(std::string_view case_name) const;
 };
 
-// A tuple or Option type, created once per element types. Owned by the
-// Program; 'type.name' views 'name'.
+// A tuple, Option or List type, created once per element types. Owned by
+// the Program; 'type.name' views 'name'.
 struct ComposedType {
-    std::string name; // "(i32, f64)", "Option<i32>"
+    std::string name; // "(i32, f64)", "Option<i32>", "List<i32>"
     Type type{TypeKind::Tuple, {}};
 };
 
@@ -105,11 +109,13 @@ struct ComposedType {
 bool is_copy_type(const Type* type);
 
 // True when a value of the type owns something to free when it goes out of
-// scope: a 'str', a type with 'drop', or a value holding one of these.
+// scope: a 'str', a 'List', a type with 'drop', or a value holding one of
+// these.
 bool needs_drop(const Type* type);
 
 // True when '.clone()' works on the type: Copy types, 'str', types with a
-// 'clone' the user wrote, and types without 'drop' whose fields all clone.
+// 'clone' the user wrote, and types without 'drop' whose fields all clone,
+// and lists of clonable elements.
 bool is_clonable(const Type* type);
 
 // Looks up a type by its source name ("i32", "bool", ...). Returns null for

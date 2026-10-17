@@ -243,6 +243,57 @@ void hana_rt_str_free(char* data, int64_t capacity)
     }
 }
 
+void hana_rt_list_reserve(hana_list* list, int64_t element_size, int64_t extra)
+{
+    const int64_t needed = list->length + extra;
+    if (needed <= list->capacity) {
+        return;
+    }
+    int64_t capacity = list->capacity > 0 ? list->capacity : 4;
+    while (capacity < needed) {
+        capacity *= 2;
+    }
+    if (element_size > 0 && capacity > INT64_MAX / element_size) {
+        out_of_memory();
+    }
+    const size_t bytes = (size_t)(capacity * (element_size > 0 ? element_size : 1));
+    void* data = list->capacity > 0 ? realloc(list->data, bytes) : malloc(bytes);
+    if (data == NULL) {
+        out_of_memory();
+    }
+    list->data = data;
+    list->capacity = capacity;
+}
+
+void hana_rt_list_free(void* data, int64_t capacity)
+{
+    if (capacity > 0) {
+        free(data);
+    }
+}
+
+_Noreturn void hana_rt_index_out_of_bounds(int64_t index, int64_t length, const char* where,
+                                           int64_t where_length)
+{
+    char buffer[160];
+    int prefix = snprintf(buffer, sizeof buffer,
+                          "index %" PRIu64 " is out of bounds for a list of length %" PRId64,
+                          (uint64_t)index, length);
+    if (prefix < 0) {
+        prefix = 0;
+    }
+    if (prefix >= (int)sizeof buffer) {
+        prefix = (int)sizeof buffer - 1;
+    }
+    fflush(stdout);
+    fputs("panic: ", stderr);
+    fwrite(buffer, 1, (size_t)prefix, stderr);
+    fwrite(where, 1, (size_t)where_length, stderr);
+    fputc('\n', stderr);
+    fflush(stderr);
+    abort();
+}
+
 _Noreturn void hana_rt_panic(const char* data, int64_t length)
 {
     fflush(stdout);

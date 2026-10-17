@@ -1,0 +1,14 @@
+10:13: error: cannot move 'ps[...]' out of the list; use '.clone()', 'pop()' or 'remove(i)'
+11:10: error: cannot move 'ps[...]' out of the list; use '.clone()', 'pop()' or 'remove(i)'
+12:13: error: cannot move 'ps[...].name' out of the list; use '.clone()', 'pop()' or 'remove(i)'
+14:12: error: cannot move 'p' out of the list; loop with 'for sink p in ...' to take the elements, or use '.clone()'
+16:12: error: cannot move 'p' out of the list; loop with 'for sink p in ...' to take the elements, or use '.clone()'
+26:20: error: cannot move 'v', because it is part of a list element; use '.clone()', 'pop()' or 'remove(i)'
+18:7: error: cannot change 'ps' while it is in use
+17:14: note: the loop over 'ps' starts here
+20:19: error: cannot move 'ps' while it is in use
+19:20: note: the loop over 'ps' starts here
+28:27: error: cannot change 'ps' while it is in use
+28:20: note: 'ps' is indexed here
+29:22: error: cannot change 'ps' while it is in use
+29:15: note: 'ps' is indexed here

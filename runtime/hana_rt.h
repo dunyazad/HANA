@@ -56,6 +56,24 @@ int32_t hana_rt_str_compare(const char* a, int64_t a_length, const char* b, int6
 /* Frees owned bytes; does nothing for a capacity of 0. */
 void hana_rt_str_free(char* data, int64_t capacity);
 
+/* A HANA 'List<T>': 'length' elements of 'element_size' bytes each, in an
+ * allocation of 'capacity' elements. A capacity of 0 means nothing is
+ * allocated. The layout matches the code generator's { ptr, i64, i64 }. */
+typedef struct hana_list {
+    void* data;
+    int64_t length;
+    int64_t capacity;
+} hana_list;
+
+/* Makes room for 'extra' more elements. Capacity grows by doubling. */
+void hana_rt_list_reserve(hana_list* list, int64_t element_size, int64_t extra);
+/* Frees the elements' storage; does nothing for a capacity of 0. */
+void hana_rt_list_free(void* data, int64_t capacity);
+/* Panics with "index <index> is out of bounds for a list of length
+ * <length>" followed by the source location text. */
+_Noreturn void hana_rt_index_out_of_bounds(int64_t index, int64_t length, const char* where,
+                                           int64_t where_length);
+
 /* Flushes standard output, prints "panic: <message>" to standard error and
  * aborts the process. */
 _Noreturn void hana_rt_panic(const char* data, int64_t length);

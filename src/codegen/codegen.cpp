@@ -50,6 +50,9 @@ bool is_place_expr(const Expr& expr)
         const auto& member = static_cast<const MemberExpr&>(expr);
         return member.field_index >= 0 && is_place_expr(*member.object);
     }
+    if (expr.kind == ExprKind::Index) {
+        return is_place_expr(*static_cast<const IndexExpr&>(expr).object);
+    }
     return false;
 }
 
@@ -73,6 +76,9 @@ CodeGenerator::CodeGenerator(llvm::LLVMContext& context, llvm::Module& module, c
     llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
     str_type_ = llvm::StructType::create(context_, {llvm::PointerType::get(context_, 0), i64, i64},
                                          "hana.str");
+    // { data, length, capacity }: see hana_list in runtime/hana_rt.h.
+    list_type_ = llvm::StructType::create(context_, {llvm::PointerType::get(context_, 0), i64, i64},
+                                          "hana.list");
 }
 
 void CodeGenerator::generate(const lang::Module& ast)
@@ -121,6 +127,7 @@ llvm::Type* CodeGenerator::llvm_type(const Type* type)
     case TypeKind::Enum: return enum_type(*type->user);
     case TypeKind::Tuple: return tuple_type(*type);
     case TypeKind::Option: return option_type(*type);
+    case TypeKind::List: return list_type_;
     case TypeKind::Error: break;
     }
     return llvm::Type::getVoidTy(context_);
@@ -305,9 +312,14 @@ void CodeGenerator::emit_c_main()
 
 llvm::AllocaInst* CodeGenerator::create_entry_alloca(const Type* type, const std::string& name)
 {
+    return create_entry_alloca(llvm_type(type), name);
+}
+
+llvm::AllocaInst* CodeGenerator::create_entry_alloca(llvm::Type* type, const std::string& name)
+{
     llvm::IRBuilder<> entry_builder(&current_function_->getEntryBlock(),
                                     current_function_->getEntryBlock().begin());
-    return entry_builder.CreateAlloca(llvm_type(type), nullptr, name);
+    return entry_builder.CreateAlloca(type, nullptr, name);
 }
 
 // Code after return/break/continue is unreachable but still emitted into
@@ -484,6 +496,10 @@ void CodeGenerator::emit_while(const WhileStmt& stmt)
 // even for '0..=255u8'. 'continue' jumps to the step.
 void CodeGenerator::emit_for(const ForStmt& stmt)
 {
+    if (stmt.iterable) {
+        emit_list_for(stmt);
+        return;
+    }
     const Type* type = stmt.symbol->type;
     llvm::Value* start = emit_value(*stmt.start, Use::Read);
     llvm::Value* end = emit_value(*stmt.end, Use::Read);
@@ -562,6 +578,11 @@ llvm::Value* CodeGenerator::emit_owned_value(const Expr& expr, Use use)
     if (is_place_expr(expr)) {
         return use == Use::Consume ? emit_move_out(expr) : emit_expr_value(expr);
     }
+    if (expr.kind == ExprKind::Index) {
+        // An element of a temporary list is read where it is; the list is
+        // dropped with the full expression.
+        return emit_expr_value(expr);
+    }
     if (expr.kind == ExprKind::Member && static_cast<const MemberExpr&>(expr).field_index >= 0) {
         // A field of a temporary.
         const auto& member = static_cast<const MemberExpr&>(expr);
@@ -608,19 +629,26 @@ llvm::Value* CodeGenerator::emit_expr_value(const Expr& expr)
     case ExprKind::Member: return emit_member(static_cast<const MemberExpr&>(expr));
     case ExprKind::Match: return emit_match(static_cast<const MatchExpr&>(expr), true, Use::Read);
     case ExprKind::Tuple: return emit_tuple(static_cast<const TupleExpr&>(expr));
+    case ExprKind::List: return emit_list(static_cast<const ListExpr&>(expr));
+    case ExprKind::Index:
+        return builder_.CreateLoad(llvm_type(expr.type),
+                                   emit_element_address(static_cast<const IndexExpr&>(expr)));
     case ExprKind::Null: return llvm::ConstantAggregateZero::get(llvm_type(expr.type));
     case ExprKind::Error:
-    case ExprKind::Index:
     case ExprKind::Try: break; // rejected by semantic analysis
     }
     return llvm::UndefValue::get(llvm_type(expr.type));
 }
 
-// The address of a place: a variable or a field path of one.
+// The address of a place: a variable, or a path of fields and list
+// elements of one.
 llvm::Value* CodeGenerator::emit_address(const Expr& place)
 {
     if (place.kind == ExprKind::Name) {
         return addresses_.at(static_cast<const NameExpr&>(place).var);
+    }
+    if (place.kind == ExprKind::Index) {
+        return emit_element_address(static_cast<const IndexExpr&>(place));
     }
     const auto& member = static_cast<const MemberExpr&>(place);
     return builder_.CreateStructGEP(llvm_type(member.object->type), emit_address(*member.object),
@@ -1086,10 +1114,14 @@ llvm::Value* CodeGenerator::emit_call(const CallExpr& call)
     return builder_.CreateCall(functions_.at(symbol), args);
 }
 
-// 's.len()' and 'v.clone()' read their receiver.
+// 's.len()' and 'v.clone()' read their receiver; list methods are in
+// codegen_list.cpp.
 llvm::Value* CodeGenerator::emit_builtin_method(const CallExpr& call, const MemberExpr& callee)
 {
     const Expr& object = *callee.object;
+    if (callee.builtin != BuiltinMethod::StrLen && callee.builtin != BuiltinMethod::Clone) {
+        return emit_list_method(call, callee);
+    }
     if (callee.builtin == BuiltinMethod::StrLen) {
         llvm::Value* length = builder_.CreateExtractValue(emit_value(object, Use::Read), 1);
         return builder_.CreateIntCast(length, llvm_type(call.type), false);
@@ -1201,6 +1233,9 @@ llvm::FunctionCallee CodeGenerator::runtime_function(const std::string& name)
         {"hana_rt_str_clone", void_type, {ptr, ptr, i64}},
         {"hana_rt_str_compare", i32, {ptr, i64, ptr, i64}},
         {"hana_rt_str_free", void_type, {ptr, i64}},
+        {"hana_rt_list_reserve", void_type, {ptr, i64, i64}},
+        {"hana_rt_list_free", void_type, {ptr, i64}},
+        {"hana_rt_index_out_of_bounds", void_type, {i64, i64, ptr, i64}},
     };
     llvm::FunctionType* type = nullptr;
     for (const Signature& signature : signatures) {
@@ -1209,7 +1244,7 @@ llvm::FunctionCallee CodeGenerator::runtime_function(const std::string& name)
         }
     }
     llvm::FunctionCallee callee = module_.getOrInsertFunction(name, type);
-    if (name == "hana_rt_panic") {
+    if (name == "hana_rt_panic" || name == "hana_rt_index_out_of_bounds") {
         llvm::cast<llvm::Function>(callee.getCallee())->addFnAttr(llvm::Attribute::NoReturn);
         llvm::cast<llvm::Function>(callee.getCallee())->addFnAttr(llvm::Attribute::Cold);
     }
