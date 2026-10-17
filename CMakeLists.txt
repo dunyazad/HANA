@@ -59,6 +59,7 @@ target_compile_options(hana_lang PRIVATE ${HANA_WARNING_FLAGS})
 # Back end: LLVM IR generation and object emission
 add_library(hana_codegen STATIC
     src/codegen/codegen.cpp
+    src/codegen/codegen_match.cpp
 )
 target_link_libraries(hana_codegen PUBLIC hana_lang ${HANA_LLVM_LIBS})
 target_include_directories(hana_codegen SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
