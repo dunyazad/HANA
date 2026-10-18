@@ -26,7 +26,8 @@ namespace hana::lang {
 // and its methods may take 'self', 'inout self' or 'sink self' first.
 class OuterParser {
 public:
-    OuterParser(const SourceFile& file, DiagnosticEngine& diagnostics);
+    // 'in_prelude' marks every location as a place in the prelude.
+    OuterParser(const SourceFile& file, DiagnosticEngine& diagnostics, bool in_prelude = false);
 
     std::unique_ptr<Module> parse();
 

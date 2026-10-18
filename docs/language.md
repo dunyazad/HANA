@@ -566,6 +566,24 @@ load: fn<Result<Config, IoError>(path: str)> '''
 - 예외는 없다.
 - [미정] 복구할 수 없는 오류(`panic`)를 직접 일으키는 방법
 
+[초안] 현재 구현 (잠정 동작 73~80번):
+```
+parse_digit: fn<Result<i32, str>(c: char)> '''
+  if c >= '0' and c <= '9':
+    return Ok((c as i32) - 48)
+  return Err(f"not a digit: {c}")
+''',
+add: fn<Result<i32, str>(a: char, b: char)> Ok(parse_digit(a)? + parse_digit(b)?),
+half: fn<i32?(x: i32?)> x? / 2,           # '?' on an Option returns null early
+
+match add('3', 'x'):
+  Ok(v): print(v)
+  Err(e): print(e)
+```
+- `Result<T, E>`는 프렐류드의 제네릭 enum이다: `Ok: { value: T }`, `Err: { error: E }`.
+- 값은 `Ok(v)`, `Err(e)`로 만든다. `match`에서는 `Ok(v)`, `Err(e)` 패턴으로 꺼낸다.
+- 메서드: `is_ok()`, `is_err()`, `value_or(fallback)`.
+
 ---
 
 ## 10. 반응형 상태와 UI (결정 15)
@@ -746,6 +764,7 @@ print(v3(1, 2, 3))
 - `str`: `+`, `+=`, 비교, `.len()`, `.clone()`, 값으로 쓰는 `f"..."`
 - `List<T>`: 값 `[a, b]`, 빈 값 `[]`, 첨자 `xs[i]`(읽기, 대입, 그 자리 수정, `&xs[i]`), `len`, `is_empty`, `push`, `pop`, `insert`, `remove`, `clear`, `.clone()`, `for x in xs` / `for inout x in xs` / `for sink x in xs`
 - 쓰는 중인 자리 검사: 쓰는 중인 자리를 바꾸거나 이동하면 오류 (잠정 동작 54번)
+- `Result<T, E>`(프렐류드), `Ok(v)` / `Err(e)`, `is_ok` / `is_err` / `value_or`, `?`(Result와 Option)
 - 제네릭과 trait: 제네릭 struct/enum/함수/메서드 `Pair<T>`, `max<T: Ord>`, `map<U>`, 제약 `T: Ord + Clone`, 타입 인자 추론, `trait` 선언과 `is: [...]`, 기본 trait `Copy`/`Clone`/`Eq`/`Ord`, 단형화
 - `match` 문과 식: 경우 패턴 `Circle(r)`, `_`, 이름, 정수/문자/bool 리터럴, 범위 `a..b` / `a..=b`, 조건 `if`, 빠진 경우 검사
 - 값 이동 검사: 이동된 값을 쓰면 오류
@@ -756,7 +775,7 @@ print(v3(1, 2, 3))
 - `print`, `write`. `main: fn` 또는 `main: fn<i32()>` (반환값이 종료 코드)
 - 정수 오버플로: 디버그는 panic, `-O`는 감싸기. 0으로 나누기는 panic
 
-**아직 지원하지 않음** (사용하면 "not supported yet" 오류): 최상위 데이터 값, `extend`, 제네릭 trait과 trait 객체, 연산자 오버로딩, `List` 외의 컬렉션(`Array`, `Map`, `Set`), 클로저, 객체 값, 포인터와 `unsafe`, C 연동, 모듈 가져오기, `str` 첨자, `?`
+**아직 지원하지 않음** (사용하면 "not supported yet" 오류): 최상위 데이터 값, `extend`, 제네릭 trait과 trait 객체, 연산자 오버로딩, 에러 타입 변환(`?`의 `From`), `List` 외의 컬렉션(`Array`, `Map`, `Set`), 클로저, 객체 값, 포인터와 `unsafe`, C 연동, 모듈 가져오기, `str` 첨자, `?`
 
 **잠정 동작 [초안]**
 1. (확정, 결정 41) 여러 줄 `'''` 블록에서는 첫 코드 줄의 들여쓰기가 블록의 기준(0단계)이다. 그래서 코드를 닫는 `'''`보다 더 들여 써도 된다. 닫는 `'''`보다 덜 들여 쓴 줄과 첫 코드 줄보다 덜 들여 쓴 줄은 오류다.
@@ -768,7 +787,7 @@ print(v3(1, 2, 3))
 7. `as`: 숫자끼리, `bool`과 `char`에서 정수로 변환할 수 있다. 실수를 정수로 바꿀 때 범위를 넘으면 최댓값/최솟값으로 고정하고 NaN은 0이 된다. 정수를 `char`로 바꾸는 것은 막는다.
 8. 숫자 타입 사이의 암묵적 변환은 없다. 다만 타입 표기 없이 리터럴로 초기화한 변수(`var i = 0`)는 그 함수 안에서 처음 타입이 정해지는 곳의 타입을 따른다 (확정, 결정 42). 끝까지 정해지지 않으면 `i32`/`f64`, 서로 다른 타입으로 쓰이면 오류다. 결정된 타입은 `hana check --ast`에 `(inferred)`로 나온다.
 9. 같은 범위에서 같은 이름을 다시 선언하면 오류다. 안쪽 블록에서 바깥 이름을 가리는 것은 허용한다.
-10. 식만 있는 문장은 함수 호출만 허용한다 (`a + 1`만 쓰면 오류).
+10. 식만 있는 문장은 함수 호출과 `?`만 허용한다 (`a + 1`만 쓰면 오류). `check()?` 문장은 `Ok`의 값을 버린다.
 11. `while true:` 안에 `break`가 없으면 끝나지 않는 반복으로 보고, 그 뒤에 `return`이 없어도 된다.
 12. 함수 본문(`'''` 또는 한 줄 코드)은 `fn` 머리와 같은 줄에서 시작한다.
 13. 실행 환경은 Linux다. 런타임 라이브러리를 `/proc/self/exe` 기준으로 찾고, 링크는 시스템 `cc`(`HANA_CC`로 변경)로 한다. macOS는 `HANA_RUNTIME`을 지정하면 동작할 것으로 보이지만 확인하지 않았다. Windows는 이후 단계에서 지원한다.
@@ -846,6 +865,14 @@ print(v3(1, 2, 3))
 70. 제네릭 타입의 메서드는 그 타입의 타입 매개변수를 쓰고, 메서드 자신의 타입 매개변수도 가질 수 있다 (`map<U>`). `Stack.new()`처럼 타입 이름으로 부르는 함수의 타입 인자도 인자와 기대 타입에서 추론한다.
 71. 제네릭 함수가 자기 타입 매개변수로 만든 더 큰 타입으로 자기를 부르면(`f<T>` 안에서 `f([x])`) 단형화가 끝나지 않으므로 오류다.
 72. 인스턴스는 `Pair<i32>`, `max<i32>`처럼 타입 인자를 붙인 이름을 갖는다 (오류 메시지와 IR).
+73. 프렐류드: 컴파일러가 모든 프로그램 앞에 붙이는 HANA 선언(`src/lang/prelude.cpp`). 지금은 `Result<T, E>`만 있다. 같은 이름을 다시 정의하면 오류이고, 프렐류드 위치는 `<prelude>:줄`로 표시한다.
+74. `Ok(v)`/`Err(e)`는 `Some(v)`처럼 prelude 함수 이름이다. 두 타입 중 하나만 주므로 기대 타입(`let r: Result<i32, str> = ...`, 반환값, 인자)이 있어야 한다. 기대 타입 없는 `let r = Ok(1)`은 오류다.
+75. `Result`에는 `Option`처럼 값을 자동으로 감싸는 규칙이 없다 (`return 5`가 아니라 `return Ok(5)`). `T`와 `E`가 같은 타입이면 어느 쪽인지 모호하기 때문이다.
+76. `x?`는 `x`를 이동한다. `Result`면 `Err(e)`일 때 함수가 `Err(e)`를 반환하고, 아니면 `Ok`의 값이 식의 값이 된다. `Option`이면 `null`일 때 함수가 `null`을 반환한다.
+77. `Result`에 쓴 `?`는 함수가 같은 에러 타입의 `Result`를 반환해야 한다. 에러 타입 변환(Rust의 `From`)은 아직 없다. `Option`에 쓴 `?`는 함수가 `Option`을 반환해야 한다 (Result와 섞을 수 없음).
+78. `?`가 함수를 빠져나가면 `return`처럼 모든 변수와 임시 값을 해제한다. 그 식에서 이미 만들었지만 아직 다 만들어지지 않은 값의 부분도 해제한다. 예: `(make(), check()?)`의 `make()`, 앞쪽 `sink` 인자, 리스트의 앞 원소, f-string의 앞부분, 가드에서 빠져나갈 때의 `match` 대상.
+79. `x?`의 기대 타입 `T`가 있으면 `x`는 `Result<T, E>`(E는 함수의 에러 타입) 또는 `T?`로 검사된다. 그래서 `let n: i64 = parse()?`처럼 제네릭 함수의 타입이 정해진다.
+80. `main`은 아직 `Result`를 반환할 수 없다 (`void` 또는 `i32`).
 
 ### 14.1 도구
 

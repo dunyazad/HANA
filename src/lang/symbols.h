@@ -33,7 +33,16 @@ enum class Intrinsic {
     Print, // print(value): writes the value and a newline
     Write, // write(value): writes the value only
     Some,  // Some(value): an Option holding the value
+    Ok,    // Ok(value): a Result holding a value
+    Err,   // Err(error): a Result holding an error
 };
+
+// Ok(...), Err(...) and Some(...) make a value that holds their argument.
+inline bool is_constructor(Intrinsic intrinsic)
+{
+    return intrinsic == Intrinsic::Some || intrinsic == Intrinsic::Ok ||
+           intrinsic == Intrinsic::Err;
+}
 
 struct FunctionSymbol {
     std::string name;
@@ -69,6 +78,8 @@ struct Program {
     // The field defaults of instances of generic types, checked with the
     // instance's types.
     std::vector<ExprPtr> instance_defaults;
+    // The declarations of the prelude (lang/prelude.h).
+    std::unique_ptr<Module> prelude;
     const FunctionSymbol* main = nullptr;
 };
 

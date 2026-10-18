@@ -1,0 +1,11 @@
+{
+  check: fn<Result<str, str>()> Ok("x"),
+  use_twice: fn<Result<i32, str>()> '''
+    let r = check()
+    let a = r?
+    let b = r?
+    return Ok(1)
+  ''',
+  from_param: fn<Result<str, str>(r: Result<str, str>)> Ok(r?),
+  main: fn pass,
+}

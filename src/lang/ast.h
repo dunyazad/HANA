@@ -652,6 +652,11 @@ TypeExpr list_type_expr(TypeExpr element);
 TypeExpr generic_type_expr(const std::string& name, std::vector<TypeExpr> arguments,
                            const SourceLocation& location);
 
+// True when the expression contains a '?' that may return from the
+// function before the expression is done.
+bool contains_try(const Expr& expr);
+bool any_contains_try(const std::vector<ExprPtr>& exprs);
+
 // "(i32, f64)" for the element types of a tuple.
 std::string tuple_type_text(const std::vector<std::string>& element_names);
 

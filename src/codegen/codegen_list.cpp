@@ -114,10 +114,11 @@ llvm::Value* CodeGenerator::emit_position(const Expr& index)
 // '[a, b, c]': the elements run in order and move into new storage.
 llvm::Value* CodeGenerator::emit_list(const ListExpr& list)
 {
-    std::vector<llvm::Value*> values;
+    std::vector<const Expr*> parts;
     for (const auto& element : list.elements) {
-        values.push_back(emit_value(*element, Use::Consume));
+        parts.push_back(element.get());
     }
+    const std::vector<llvm::Value*> values = emit_consumed_parts(parts);
     llvm::AllocaInst* result = create_entry_alloca(list.type, "list");
     builder_.CreateStore(llvm::ConstantAggregateZero::get(list_type_), result);
     if (!values.empty()) {

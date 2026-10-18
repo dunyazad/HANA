@@ -1,0 +1,15 @@
+ok 7
+error: not a digit: x
+error: not a digit: z
+true
+false
+5
+-1
+8
+none
+drop first
+drop held
+failed
+drop first
+held
+drop held

@@ -442,7 +442,14 @@ void CodeGenerator::emit_assign(const AssignStmt& assign)
 // dropped.
 void CodeGenerator::emit_return(const ReturnStmt& ret)
 {
-    llvm::Value* value = ret.value ? emit_value(*ret.value, Use::Consume) : nullptr;
+    emit_return_value(ret.value ? emit_value(*ret.value, Use::Consume) : nullptr);
+}
+
+// Leaves the function with 'value' (null for none), dropping the
+// temporaries of every open full expression and the variables of every
+// scope. Used by 'return' and by '?'.
+void CodeGenerator::emit_return_value(llvm::Value* value)
+{
     drop_temporaries_from(0);
     drop_scopes_from(0);
     if (value != nullptr) {
@@ -655,8 +662,8 @@ llvm::Value* CodeGenerator::emit_expr_value(const Expr& expr)
         return builder_.CreateLoad(llvm_type(expr.type),
                                    emit_element_address(static_cast<const IndexExpr&>(expr)));
     case ExprKind::Null: return llvm::ConstantAggregateZero::get(llvm_type(expr.type));
-    case ExprKind::Error:
-    case ExprKind::Try: break; // rejected by semantic analysis
+    case ExprKind::Try: return emit_try(static_cast<const TryExpr&>(expr));
+    case ExprKind::Error: break; // rejected by semantic analysis
     }
     return llvm::UndefValue::get(llvm_type(expr.type));
 }
@@ -712,10 +719,11 @@ llvm::Value* CodeGenerator::emit_struct_literal(const StructLiteralExpr& lit)
 std::vector<llvm::Value*> CodeGenerator::emit_literal_fields(const StructLiteralExpr& lit,
                                                              const std::vector<FieldInfo>& fields)
 {
-    std::vector<llvm::Value*> written;
+    std::vector<const Expr*> parts;
     for (const auto& field : lit.fields) {
-        written.push_back(emit_value(*field.value, Use::Consume));
+        parts.push_back(field.value.get());
     }
+    std::vector<llvm::Value*> written = emit_consumed_parts(parts);
     std::vector<llvm::Value*> values;
     for (std::size_t i = 0; i < fields.size(); ++i) {
         const int index = lit.field_order[i];
@@ -745,12 +753,39 @@ llvm::Value* CodeGenerator::emit_enum_value(const UserType& info, int case_index
 
 llvm::Value* CodeGenerator::emit_tuple(const TupleExpr& tuple)
 {
+    std::vector<const Expr*> parts;
+    for (const auto& element : tuple.elements) {
+        parts.push_back(element.get());
+    }
+    const std::vector<llvm::Value*> elements = emit_consumed_parts(parts);
     llvm::Value* value = llvm::PoisonValue::get(llvm_type(tuple.type));
-    for (std::size_t i = 0; i < tuple.elements.size(); ++i) {
-        value = builder_.CreateInsertValue(value, emit_value(*tuple.elements[i], Use::Consume),
-                                           static_cast<unsigned>(i));
+    for (std::size_t i = 0; i < elements.size(); ++i) {
+        value = builder_.CreateInsertValue(value, elements[i], static_cast<unsigned>(i));
     }
     return value;
+}
+
+// The values of the parts of a new value, in order, each moved into it.
+// When a later part contains '?', the parts made before it are held by
+// the full expression until the new value is complete, so an early return
+// drops them.
+std::vector<llvm::Value*> CodeGenerator::emit_consumed_parts(const std::vector<const Expr*>& parts)
+{
+    std::vector<llvm::Value*> values;
+    std::vector<llvm::Value*> holds;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        llvm::Value* value = emit_value(*parts[i], Use::Consume);
+        values.push_back(value);
+        bool later_try = false;
+        for (std::size_t j = i + 1; j < parts.size(); ++j) {
+            later_try = later_try || contains_try(*parts[j]);
+        }
+        holds.push_back(later_try ? hold_pending(value, result_type(*parts[i])) : nullptr);
+    }
+    for (llvm::Value* hold : holds) {
+        release_pending(hold);
+    }
+    return values;
 }
 
 // An argument passed by pointer: a place passes its own address, any
@@ -1105,9 +1140,12 @@ llvm::Value* CodeGenerator::emit_shift(BinaryOp op, const Type* type, llvm::Valu
     return type->is_signed ? builder_.CreateAShr(lhs, amount) : builder_.CreateLShr(lhs, amount);
 }
 
+// A 'sink' argument made before a later argument's '?' is held until the
+// call, so an early return drops it.
 llvm::Value* CodeGenerator::emit_call(const CallExpr& call)
 {
     std::vector<llvm::Value*> args;
+    std::vector<llvm::Value*> holds;
     const FunctionSymbol* symbol = nullptr;
     if (call.callee->kind == ExprKind::Member) {
         const auto& callee = static_cast<const MemberExpr&>(*call.callee);
@@ -1117,11 +1155,19 @@ llvm::Value* CodeGenerator::emit_call(const CallExpr& call)
         symbol = callee.method;
         if (!callee.is_static_call) {
             args.push_back(emit_receiver(*symbol->self_convention, *callee.object));
+            if (*symbol->self_convention == ParamConvention::Sink && any_contains_try(call.args)) {
+                holds.push_back(hold_pending(args.back(), result_type(*callee.object)));
+            }
         }
     } else {
         symbol = static_cast<const NameExpr&>(*call.callee).function;
         if (symbol->intrinsic == Intrinsic::Some) {
             return emit_some(*call.type, emit_value(*call.args.front(), Use::Consume));
+        }
+        if (symbol->intrinsic == Intrinsic::Ok || symbol->intrinsic == Intrinsic::Err) {
+            const UserType& result = *call.type->user;
+            const int case_index = result.find_case(symbol->intrinsic == Intrinsic::Ok ? "Ok" : "Err");
+            return emit_enum_value(result, case_index, {emit_value(*call.args.front(), Use::Consume)});
         }
         if (symbol->intrinsic != Intrinsic::None) {
             emit_print(*call.args.front(), symbol->intrinsic == Intrinsic::Print);
@@ -1131,6 +1177,16 @@ llvm::Value* CodeGenerator::emit_call(const CallExpr& call)
     for (std::size_t i = 0; i < call.args.size(); ++i) {
         args.push_back(
             emit_argument(symbol->conventions[i], symbol->param_types[i], *call.args[i]));
+        bool later_try = false;
+        for (std::size_t j = i + 1; j < call.args.size(); ++j) {
+            later_try = later_try || contains_try(*call.args[j]);
+        }
+        if (symbol->conventions[i] == ParamConvention::Sink && later_try) {
+            holds.push_back(hold_pending(args.back(), symbol->param_types[i]));
+        }
+    }
+    for (llvm::Value* hold : holds) {
+        release_pending(hold);
     }
     return builder_.CreateCall(functions_.at(symbol), args);
 }

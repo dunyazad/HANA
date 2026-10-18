@@ -5,6 +5,7 @@
 
 #include "lang/access_checker.h"
 #include "lang/move_checker.h"
+#include "lang/prelude.h"
 #include "lang/sema_util.h"
 
 namespace hana::lang {
@@ -137,14 +138,46 @@ Sema::Sema(DiagnosticEngine& diagnostics)
 std::unique_ptr<Program> Sema::check(Module& module)
 {
     program_ = std::make_unique<Program>();
+    program_->prelude = parse_prelude(*diagnostics_);
     declare_intrinsics();
     declare_builtin_traits();
-    for (auto& decl : module.traits) {
-        declare_trait(*decl);
+    // The prelude's declarations come first, as if written before the
+    // program's own.
+    const std::vector<Module*> modules{program_->prelude.get(), &module};
+    for (Module* source : modules) {
+        for (auto& decl : source->traits) {
+            declare_trait(*decl);
+        }
     }
-    for (auto& decl : module.types) {
-        declare_type(*decl);
+    for (Module* source : modules) {
+        for (auto& decl : source->types) {
+            declare_type(*decl);
+        }
     }
+    result_type_ = lookup_type("Result");
+    for (Module* source : modules) {
+        declare_module(*source);
+    }
+    declare_waiting_instance_methods();
+    for (Module* source : modules) {
+        check_module(*source);
+    }
+    check_pending_instances();
+    // Moves and accesses are checked only on a well-typed module, so every
+    // expression has its type and every name its symbol.
+    if (!diagnostics_->has_errors()) {
+        for (Module* source : modules) {
+            MoveChecker(*diagnostics_).check(*source);
+            AccessChecker(*diagnostics_).check(*source);
+        }
+    }
+    return std::move(program_);
+}
+
+// Everything a module declares after the names of its types and traits:
+// fields, trait methods, functions and methods.
+void Sema::declare_module(Module& module)
+{
     for (auto& decl : module.types) {
         declare_type_fields(*decl);
     }
@@ -163,7 +196,10 @@ std::unique_ptr<Program> Sema::check(Module& module)
             declare_method(*decl, *method);
         }
     }
-    declare_waiting_instance_methods();
+}
+
+void Sema::check_module(Module& module)
+{
     for (const auto& decl : module.types) {
         check_trait_conformance(*decl);
     }
@@ -178,14 +214,6 @@ std::unique_ptr<Program> Sema::check(Module& module)
             check_function_body(*method);
         }
     }
-    check_pending_instances();
-    // Moves and accesses are checked only on a well-typed module, so every
-    // expression has its type and every name its symbol.
-    if (!diagnostics_->has_errors()) {
-        MoveChecker(*diagnostics_).check(module);
-        AccessChecker(*diagnostics_).check(module);
-    }
-    return std::move(program_);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +229,8 @@ void Sema::declare_intrinsics()
         {"print", Intrinsic::Print},
         {"write", Intrinsic::Write},
         {"Some", Intrinsic::Some},
+        {"Ok", Intrinsic::Ok},
+        {"Err", Intrinsic::Err},
     };
     for (const IntrinsicEntry& entry : kIntrinsics) {
         FunctionSymbol& symbol = program_->functions.emplace_back();
@@ -967,9 +997,12 @@ void Sema::require_mutable(const Place& place, MutationKind kind, const std::str
 bool Sema::check_expression_statement(ExprStmt& stmt)
 {
     check_expr(*stmt.expr, nullptr);
-    if (stmt.expr->kind != ExprKind::Call && stmt.expr->kind != ExprKind::Error) {
-        diagnostics_->error(stmt.expr->location,
-                           "this expression has no effect; only calls can be used as statements");
+    // 'check()?' may return early, so it does something even when its value
+    // is not used.
+    const bool has_effect = stmt.expr->kind == ExprKind::Call || stmt.expr->kind == ExprKind::Try;
+    if (!has_effect && stmt.expr->kind != ExprKind::Error) {
+        diagnostics_->error(stmt.expr->location, "this expression has no effect; only calls and "
+                                                 "'?' can be used as statements");
     }
     return false;
 }
@@ -1129,7 +1162,7 @@ const Type* Sema::check_expr_value(Expr& expr, const Type* expected)
     case ExprKind::Tuple: type = check_tuple(static_cast<TupleExpr&>(expr), expected); break;
     case ExprKind::List: type = check_list(static_cast<ListExpr&>(expr), expected); break;
     case ExprKind::Index: type = check_index(static_cast<IndexExpr&>(expr)); break;
-    case ExprKind::Try: type = unsupported(expr, "the '?' operator is"); break;
+    case ExprKind::Try: type = check_try(static_cast<TryExpr&>(expr), expected); break;
     }
     expr.type = type;
     return type;
@@ -1637,6 +1670,9 @@ const Type* Sema::check_function_call(CallExpr& call, NameExpr& callee, const Ty
     callee.function = function;
     if (function->intrinsic == Intrinsic::Some) {
         return check_some_call(call, expected);
+    }
+    if (function->intrinsic == Intrinsic::Ok || function->intrinsic == Intrinsic::Err) {
+        return check_result_call(call, function->intrinsic == Intrinsic::Ok, expected);
     }
     if (function->intrinsic != Intrinsic::None) {
         return check_intrinsic_call(call, *function);

@@ -1,0 +1,32 @@
+{
+  Account: struct {
+    owner: str,
+    balance: i64,
+  },
+
+  withdraw: fn<Result<i64, str>(inout account: Account, amount: i64)> '''
+    if amount <= 0:
+      return Err(f"cannot withdraw {amount}")
+    if amount > account.balance:
+      return Err(f"{account.owner} has only {account.balance}")
+    account.balance -= amount
+    return Ok(account.balance)
+  ''',
+
+  pay_rent: fn<Result<i64, str>(inout account: Account)> '''
+    withdraw(&account, 500)?
+    return withdraw(&account, 30)
+  ''',
+
+  main: fn '''
+    var alice = Account { owner: "alice", balance: 1000 }
+    var bob = Account { owner: "bob", balance: 510 }
+    for amount in [100i64, -5, 2000]:
+      match withdraw(&alice, amount):
+        Ok(left): print(f"alice withdrew {amount}, {left} left")
+        Err(message): print(f"error: {message}")
+    match pay_rent(&bob):
+      Ok(left): print(f"bob paid rent, {left} left")
+      Err(message): print(f"error: {message}")
+  ''',
+}

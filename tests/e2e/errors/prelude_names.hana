@@ -1,0 +1,5 @@
+{
+  Result: struct { x: i32 },
+  Ok: fn pass,
+  main: fn pass,
+}

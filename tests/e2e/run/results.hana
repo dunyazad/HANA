@@ -1,0 +1,57 @@
+{
+  Noisy: struct {
+    name: str,
+    drop: fn<(inout self)> print(f"drop {self.name}"),
+  },
+  parse_digit: fn<Result<i32, str>(c: char)> '''
+    if c >= '0' and c <= '9':
+      return Ok((c as i32) - 48)
+    return Err(f"not a digit: {c}")
+  ''',
+  add_digits: fn<Result<i32, str>(a: char, b: char)> '''
+    let x = parse_digit(a)?
+    let y = parse_digit(b)?
+    return Ok(x + y)
+  ''',
+  first_even: fn<i32?(xs: List<i32>)> '''
+    for x in xs:
+      if x % 2 == 0:
+        return x
+    return null
+  ''',
+  double_first_even: fn<i32?(xs: List<i32>)> first_even(xs)? * 2,
+  keep_on_error: fn<Result<Noisy, str>(fail: bool)> '''
+    let n = Noisy { name: "held" }
+    let pair = (Noisy { name: "first" }, check(fail)?)
+    return Ok(n)
+  ''',
+  check: fn<Result<i32, str>(fail: bool)> Err("failed") if fail else Ok(1),
+  describe: fn<str(r: Result<i32, str>)> '''
+    match r:
+      Ok(v): return f"ok {v}"
+      Err(e): return f"error: {e}"
+  ''',
+  main: fn '''
+    print(describe(add_digits('3', '4')))
+    print(describe(add_digits('3', 'x')))
+    print(describe(add_digits('z', 'x')))
+    let r: Result<i32, str> = Ok(5)
+    print(r.is_ok())
+    print(r.is_err())
+    print(r.value_or(0))
+    let e: Result<i32, str> = Err("bad")
+    print(e.value_or(-1))
+    match double_first_even([1, 3, 4, 6]):
+      Some(v): print(v)
+      null: print("none")
+    match double_first_even([1, 3]):
+      Some(v): print(v)
+      null: print("none")
+    match keep_on_error(true):
+      Ok(n): print(n.name)
+      Err(msg): print(msg)
+    match keep_on_error(false):
+      Ok(n): print(n.name)
+      Err(msg): print(msg)
+  ''',
+}

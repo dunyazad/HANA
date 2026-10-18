@@ -1,0 +1,3 @@
+2:3: error: 'Result' is already defined as an enum
+<prelude>:2: note: previous definition is here
+3:3: error: function 'Ok' is already defined

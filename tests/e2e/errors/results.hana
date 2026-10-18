@@ -1,0 +1,20 @@
+{
+  check: fn<Result<i32, str>()> Ok(1),
+  other: fn<Result<i32, i64>()> Err(5),
+  maybe: fn<i32?()> 3,
+  no_result: fn<i32()> check()?,
+  wrong_error: fn<Result<i32, str>()> Ok(other()?),
+  option_in_result: fn<Result<i32, str>()> Ok(maybe()?),
+  not_wrappable: fn<Result<i32, str>()> Ok(5?),
+  bad_ok: fn<Result<i32, str>()> Ok("x"),
+  bad_err: fn<Result<i32, str>()> Err(1),
+  main: fn '''
+    let a = Ok(1)
+    let r = check()
+    let x = r?
+    let n = Ok()
+    var y = check()
+    let z = y?
+    print(y.is_ok())
+  ''',
+}

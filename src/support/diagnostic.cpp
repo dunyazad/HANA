@@ -55,6 +55,10 @@ static std::string caret_line(std::string_view line, std::uint32_t column)
 std::string format_diagnostic(const SourceFile& file, const Diagnostic& diagnostic)
 {
     const char* label = diagnostic.severity == Severity::Error ? "error" : "note";
+    if (diagnostic.location.in_prelude) {
+        return "<prelude>:" + std::to_string(diagnostic.location.line) + ": " + label + ": " +
+               diagnostic.message + "\n";
+    }
     std::string out = file.path + ":" + std::to_string(diagnostic.location.line) + ":" +
                       std::to_string(diagnostic.location.column) + ": " + label + ": " +
                       diagnostic.message + "\n";
@@ -97,6 +101,7 @@ static std::string json_position(const Diagnostic& diagnostic)
 {
     return "\"line\": " + std::to_string(diagnostic.location.line) +
            ", \"column\": " + std::to_string(diagnostic.location.column) +
+           (diagnostic.location.in_prelude ? ", \"in_prelude\": true" : "") +
            ", \"message\": \"" + json_escape(diagnostic.message) + "\"";
 }
 

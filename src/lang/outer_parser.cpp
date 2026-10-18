@@ -48,10 +48,11 @@ void turn_expression_into_return(Block& block)
 
 } // namespace
 
-OuterParser::OuterParser(const SourceFile& file, DiagnosticEngine& diagnostics)
+OuterParser::OuterParser(const SourceFile& file, DiagnosticEngine& diagnostics, bool in_prelude)
     : source_(file.text)
     , diagnostics_(diagnostics)
 {
+    location_.in_prelude = in_prelude;
     if (source_.substr(0, 3) == "\xEF\xBB\xBF") {
         location_.offset = 3;
     }

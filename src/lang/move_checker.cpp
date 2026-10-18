@@ -303,7 +303,7 @@ void MoveChecker::use_value(const Expr& expr, State& state)
         use(*index.index, state);
         return;
     }
-    case ExprKind::Try: use(*static_cast<const TryExpr&>(expr).operand, state); return;
+    case ExprKind::Try: consume(*static_cast<const TryExpr&>(expr).operand, state); return;
     case ExprKind::Error:
     case ExprKind::IntLiteral:
     case ExprKind::FloatLiteral:
@@ -621,7 +621,7 @@ void MoveChecker::walk_call(const CallExpr& call, State& state)
         return;
     }
     const FunctionSymbol& function = *static_cast<const NameExpr&>(*call.callee).function;
-    if (function.intrinsic == Intrinsic::Some) {
+    if (is_constructor(function.intrinsic)) {
         for (const auto& arg : call.args) {
             consume(*arg, state); // the Option holds the value
         }

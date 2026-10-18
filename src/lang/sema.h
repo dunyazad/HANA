@@ -71,6 +71,8 @@ private:
     };
 
     // Declarations
+    void declare_module(Module& module);
+    void check_module(Module& module);
     void declare_intrinsics();
     void declare_type(TypeDecl& decl);
     void declare_type_fields(TypeDecl& decl);
@@ -176,6 +178,11 @@ private:
     const UserType* infer_literal_type(StructLiteralExpr& lit, const UserType& generic,
                                        const Type* expected);
 
+    // Result and '?' (sema_result.cpp)
+    bool is_result(const Type* type) const;
+    const Type* check_result_call(CallExpr& call, bool is_ok, const Type* expected);
+    const Type* check_try(TryExpr& expr, const Type* expected);
+
     // Lists (sema_list.cpp)
     const Type* list_type(const Type* element);
     const Type* check_list(ListExpr& list, const Type* expected);
@@ -275,6 +282,7 @@ private:
     std::unordered_map<const Type*, const Type*> option_types_;
     std::unordered_map<const Type*, const Type*> list_types_;
     std::unordered_map<std::string, const TraitInfo*> traits_;
+    const UserType* result_type_ = nullptr; // 'Result<T, E>' of the prelude
     std::vector<std::unordered_map<std::string, const Type*>> type_scopes_;
     std::map<std::pair<const UserType*, std::vector<const Type*>>, const Type*> type_instances_;
     std::map<std::pair<const FunctionSymbol*, std::vector<const Type*>>, const FunctionSymbol*>

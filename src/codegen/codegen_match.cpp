@@ -22,6 +22,17 @@ llvm::Value* CodeGenerator::emit_match(const MatchExpr& match, bool is_expressio
 {
     bool owns_subject = false;
     llvm::Value* subject = emit_subject_address(*match.subject, owns_subject);
+    // A '?' in a guard may return before any arm owns the subject.
+    llvm::Value* subject_hold = nullptr;
+    bool guard_try = false;
+    for (const MatchArm& arm : match.arms) {
+        guard_try = guard_try || (arm.guard && contains_try(*arm.guard));
+    }
+    if (owns_subject && guard_try && !temporaries_.empty()) {
+        subject_hold = create_entry_alloca(bool_type(), "subject.owned");
+        builder_.CreateStore(builder_.getInt1(true), subject_hold);
+        temporaries_.back().push_back(OwnedSlot{subject, result_type(*match.subject), subject_hold});
+    }
     llvm::AllocaInst* result = is_expression ? create_entry_alloca(match.type, "match") : nullptr;
     llvm::AllocaInst* result_owned = nullptr;
     if (is_expression && use == Use::Read && needs_drop(match.type)) {
@@ -29,7 +40,7 @@ llvm::Value* CodeGenerator::emit_match(const MatchExpr& match, bool is_expressio
     }
     auto* end_block = llvm::BasicBlock::Create(context_, "match.end");
     for (const MatchArm& arm : match.arms) {
-        emit_match_arm(arm, match, is_expression, use, subject, owns_subject, result,
+        emit_match_arm(arm, match, is_expression, use, subject, owns_subject, subject_hold, result,
                        result_owned, end_block);
     }
     builder_.CreateUnreachable();
@@ -52,8 +63,8 @@ llvm::Value* CodeGenerator::emit_match(const MatchExpr& match, bool is_expressio
 // owns.
 void CodeGenerator::emit_match_arm(const MatchArm& arm, const MatchExpr& match, bool is_expression,
                                    Use use, llvm::Value* subject, bool owns_subject,
-                                   llvm::Value* result, llvm::Value* result_owned,
-                                   llvm::BasicBlock* end_block)
+                                   llvm::Value* subject_hold, llvm::Value* result,
+                                   llvm::Value* result_owned, llvm::BasicBlock* end_block)
 {
     const Type* type = result_type(*match.subject);
     auto* next_block = llvm::BasicBlock::Create(context_, "match.next", current_function_);
@@ -70,6 +81,7 @@ void CodeGenerator::emit_match_arm(const MatchArm& arm, const MatchExpr& match, 
     }
     push_scope();
     if (owns_subject) {
+        release_pending(subject_hold);
         own_pattern_bindings(*arm.pattern);
         drop_unbound(*arm.pattern, subject, type);
     }
@@ -368,6 +380,56 @@ void CodeGenerator::branch_if_open(llvm::BasicBlock* target)
     if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
         builder_.CreateBr(target);
     }
+}
+
+// ---------------------------------------------------------------------------
+// '?'
+
+// 'value?': the operand is taken apart. An 'Err' (or 'null') leaves the
+// function like 'return Err(error)' (or 'return null'); otherwise the
+// value inside is the result, owned by the expression.
+llvm::Value* CodeGenerator::emit_try(const TryExpr& expr)
+{
+    const Type* type = result_type(*expr.operand);
+    llvm::AllocaInst* operand = create_entry_alloca(type, "try");
+    builder_.CreateStore(emit_value(*expr.operand, Use::Consume), operand);
+    return type->is_option() ? emit_try_option(operand, type) : emit_try_result(operand, type);
+}
+
+llvm::Value* CodeGenerator::emit_try_option(llvm::Value* operand, const Type* type)
+{
+    auto* fail_block = llvm::BasicBlock::Create(context_, "try.null", current_function_);
+    auto* ok_block = llvm::BasicBlock::Create(context_, "try.some", current_function_);
+    builder_.CreateCondBr(option_has_value(type, operand), ok_block, fail_block);
+    builder_.SetInsertPoint(fail_block);
+    emit_return_value(llvm::ConstantAggregateZero::get(llvm_type(current_return_type_)));
+    builder_.SetInsertPoint(ok_block);
+    return builder_.CreateLoad(llvm_type(type->option_value()), option_value_address(type, operand));
+}
+
+llvm::Value* CodeGenerator::emit_try_result(llvm::Value* operand, const Type* type)
+{
+    const UserType& info = *type->user;
+    const int ok_index = info.find_case("Ok");
+    const int err_index = info.find_case("Err");
+    llvm::Value* tag =
+        builder_.CreateLoad(builder_.getInt32Ty(), builder_.CreateStructGEP(enum_type(info), operand, 0));
+    auto* fail_block = llvm::BasicBlock::Create(context_, "try.err", current_function_);
+    auto* ok_block = llvm::BasicBlock::Create(context_, "try.ok", current_function_);
+    builder_.CreateCondBr(builder_.CreateICmpEQ(tag, builder_.getInt32(static_cast<std::uint32_t>(ok_index))),
+                          ok_block, fail_block);
+
+    builder_.SetInsertPoint(fail_block);
+    const EnumCase& err_case = info.cases[static_cast<std::size_t>(err_index)];
+    llvm::Value* error = builder_.CreateLoad(llvm_type(err_case.fields[0].type),
+                                             case_field_address(info, err_case, operand, 0));
+    const UserType& returned = *current_return_type_->user;
+    emit_return_value(emit_enum_value(returned, returned.find_case("Err"), {error}));
+
+    builder_.SetInsertPoint(ok_block);
+    const EnumCase& ok_case = info.cases[static_cast<std::size_t>(ok_index)];
+    return builder_.CreateLoad(llvm_type(ok_case.fields[0].type),
+                               case_field_address(info, ok_case, operand, 0));
 }
 
 } // namespace hana::codegen

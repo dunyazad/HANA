@@ -661,3 +661,16 @@ TEST(sema_traits_are_checked)
     EXPECT(check("{ Shape: trait { area: fn<f64(self)> }, Sq: struct { is: [Shape], s: f64 } }")
                ->has_error("'Sq' says it is 'Shape', but has no method 'area'"));
 }
+
+TEST(sema_result_and_try)
+{
+    auto r = check("{ p: fn<Result<i32, str>(ok: bool)> Ok(1) if ok else Err(\"no\"),\n"
+                   "  q: fn<Result<i64, str>()> Ok(p(true)? as i64 + 1),\n"
+                   "  o: fn<i32?(x: i32?)> x? + 1 }");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(check("{ p: fn<Result<i32, str>()> Ok(1), q: fn<i32()> p()? }")
+               ->has_error("the function must return a Result"));
+    EXPECT(check("{ p: fn<Result<i32, i64>()> Ok(1), q: fn<Result<i32, str>()> Ok(p()?) }")
+               ->has_error("returns an error of type 'i64'"));
+    EXPECT(check("{ f: fn '''\n  let a = Err(1)\n''' }")->has_error("cannot tell the type of this 'Err"));
+}

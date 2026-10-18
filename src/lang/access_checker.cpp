@@ -207,7 +207,7 @@ void AccessChecker::walk(const Expr& expr, bool consuming)
             walk(*part, false);
         }
         return;
-    case ExprKind::Try: walk(*static_cast<const TryExpr&>(expr).operand, false); return;
+    case ExprKind::Try: walk(*static_cast<const TryExpr&>(expr).operand, true); return;
     case ExprKind::Error:
     case ExprKind::IntLiteral:
     case ExprKind::FloatLiteral:
@@ -287,7 +287,7 @@ void AccessChecker::walk_call(const CallExpr& call)
         const FunctionSymbol& function = *static_cast<const NameExpr&>(*call.callee).function;
         for (std::size_t i = 0; i < call.args.size(); ++i) {
             ParamConvention convention = ParamConvention::Read;
-            if (function.intrinsic == Intrinsic::Some) {
+            if (is_constructor(function.intrinsic)) {
                 convention = ParamConvention::Sink;
             } else if (function.intrinsic == Intrinsic::None) {
                 convention = function.conventions[i];

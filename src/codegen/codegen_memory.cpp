@@ -139,6 +139,31 @@ llvm::Value* CodeGenerator::keep_temporary(llvm::Value* value, const Type* type,
     return value;
 }
 
+// A value made for a larger value that is not complete yet. When a later
+// part of the expression returns early with '?', the full expression's
+// temporaries are dropped, and with them this value; once the larger value
+// takes it, 'release_pending' clears its flag. Returns the flag, or null
+// when the value needs no drop.
+llvm::Value* CodeGenerator::hold_pending(llvm::Value* value, const Type* type)
+{
+    if (!needs_drop(type) || temporaries_.empty()) {
+        return nullptr;
+    }
+    llvm::AllocaInst* slot = create_entry_alloca(type, "pending");
+    builder_.CreateStore(value, slot);
+    llvm::AllocaInst* flag = create_entry_alloca(bool_type(), "pending.owned");
+    builder_.CreateStore(builder_.getInt1(true), flag);
+    temporaries_.back().push_back(OwnedSlot{slot, type, flag});
+    return flag;
+}
+
+void CodeGenerator::release_pending(llvm::Value* flag)
+{
+    if (flag != nullptr) {
+        builder_.CreateStore(builder_.getInt1(false), flag);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Moves
 
@@ -602,6 +627,13 @@ llvm::Value* CodeGenerator::emit_format_string(const StringLiteralExpr& lit)
 {
     llvm::AllocaInst* result = create_entry_alloca(str_type(), "format");
     builder_.CreateStore(llvm::ConstantAggregateZero::get(str_type_), result);
+    // A '?' in a later part would leave the string half made.
+    llvm::Value* hold = nullptr;
+    if (any_contains_try(lit.parts) && !temporaries_.empty()) {
+        hold = create_entry_alloca(bool_type(), "format.owned");
+        builder_.CreateStore(builder_.getInt1(true), hold);
+        temporaries_.back().push_back(OwnedSlot{result, str_type(), hold});
+    }
     for (std::size_t i = 0; i < lit.texts.size(); ++i) {
         if (!lit.texts[i].empty()) {
             emit_str_append(result, emit_string_constant(lit.texts[i]));
@@ -610,6 +642,7 @@ llvm::Value* CodeGenerator::emit_format_string(const StringLiteralExpr& lit)
             emit_str_push_value(result, *lit.parts[i]);
         }
     }
+    release_pending(hold);
     return builder_.CreateLoad(str_type_, result);
 }
 

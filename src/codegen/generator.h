@@ -132,6 +132,7 @@ private:
     void emit_destructuring_let(const LetStmt& let);
     void emit_assign(const AssignStmt& assign);
     void emit_return(const ReturnStmt& ret);
+    void emit_return_value(llvm::Value* value);
     void emit_jump(const Stmt& stmt);
     void emit_if(const IfStmt& stmt);
     void emit_while(const WhileStmt& stmt);
@@ -143,8 +144,9 @@ private:
     // match (codegen_match.cpp)
     llvm::Value* emit_match(const MatchExpr& match, bool is_expression, Use use);
     void emit_match_arm(const MatchArm& arm, const MatchExpr& match, bool is_expression, Use use,
-                        llvm::Value* subject, bool owns_subject, llvm::Value* result,
-                        llvm::Value* result_owned, llvm::BasicBlock* end_block);
+                        llvm::Value* subject, bool owns_subject, llvm::Value* subject_hold,
+                        llvm::Value* result, llvm::Value* result_owned,
+                        llvm::BasicBlock* end_block);
     void emit_arm_value(const MatchArm& arm, Use use, llvm::Value* result,
                         llvm::Value* result_owned, const std::vector<OwnedSlot>& arm_owned);
     llvm::Value* emit_subject_address(const Expr& subject, bool& owns_subject);
@@ -178,6 +180,10 @@ private:
     llvm::Value* emit_enum_value(const UserType& info, int case_index,
                                  const std::vector<llvm::Value*>& fields);
     llvm::Value* emit_tuple(const TupleExpr& tuple);
+    std::vector<llvm::Value*> emit_consumed_parts(const std::vector<const Expr*>& parts);
+    llvm::Value* emit_try(const TryExpr& expr);
+    llvm::Value* emit_try_option(llvm::Value* operand, const Type* type);
+    llvm::Value* emit_try_result(llvm::Value* operand, const Type* type);
     llvm::Value* emit_pointer_argument(const Expr& arg);
     llvm::Value* emit_argument(ParamConvention convention, const Type* param_type, const Expr& arg);
     llvm::Value* emit_receiver(ParamConvention convention, const Expr& object);
@@ -235,6 +241,8 @@ private:
     void emit_clone_body(const Type* type, llvm::Function& function);
     llvm::Value* emit_clone_enum(const UserType& info, llvm::Value* address);
     void store_with_drop(const Expr& target, llvm::Value* address, llvm::Value* value);
+    llvm::Value* hold_pending(llvm::Value* value, const Type* type);
+    void release_pending(llvm::Value* flag);
 
     // 'str' (codegen_memory.cpp)
     llvm::Value* emit_str_concat(llvm::Value* lhs, llvm::Value* rhs);

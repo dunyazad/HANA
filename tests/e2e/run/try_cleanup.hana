@@ -1,0 +1,63 @@
+{
+  Noisy: struct {
+    name: str,
+    drop: fn<(inout self)> print(f"drop {self.name}"),
+  },
+  Pair: struct { a: Noisy, b: i32 },
+  Slot: enum { Full: { item: Noisy }, Empty: {} },
+  check: fn<Result<i32, str>(fail: bool)> Err("failed") if fail else Ok(1),
+  make: fn<Noisy(sink name: str)> Noisy { name: name },
+  take: fn<i32(sink n: Noisy, k: i32)> k,
+  in_struct: fn<Result<i32, str>(fail: bool)> '''
+    let p = Pair { a: make("struct"), b: check(fail)? }
+    return Ok(p.b)
+  ''',
+  in_sink_arg: fn<Result<i32, str>(fail: bool)> Ok(take(make("arg"), check(fail)?)),
+  in_format: fn<Result<str, str>(fail: bool)> Ok(f"value {make("fmt").name} {check(fail)?}"),
+  in_list: fn<Result<usize, str>(fail: bool)> '''
+    let xs = [make("l1"), make("l2"), make(f"l{check(fail)?}")]
+    return Ok(xs.len())
+  ''',
+  in_guard: fn<Result<i32, str>(fail: bool)> '''
+    match Slot.Full { item: make("subject") }:
+      Full(item) if check(fail)? > 0: return Ok(1)
+      _: return Ok(0)
+  ''',
+  in_loop: fn<Result<i32, str>(fail_at: i32)> '''
+    var total = 0
+    for sink n in [make("e0"), make("e1"), make("e2")]:
+      let k = check(total == fail_at)?
+      total += k
+    return Ok(total)
+  ''',
+  show: fn<(r: Result<i32, str>)> '''
+    match r:
+      Ok(v): print(f"ok {v}")
+      Err(e): print(f"err {e}")
+  ''',
+  main: fn '''
+    print("-- struct")
+    show(in_struct(true))
+    show(in_struct(false))
+    print("-- sink arg")
+    show(in_sink_arg(true))
+    show(in_sink_arg(false))
+    print("-- format")
+    match in_format(true):
+      Ok(s): print(s)
+      Err(e): print(e)
+    match in_format(false):
+      Ok(s): print(s)
+      Err(e): print(e)
+    print("-- list")
+    match in_list(true):
+      Ok(n): print(n)
+      Err(e): print(e)
+    print("-- guard")
+    show(in_guard(true))
+    show(in_guard(false))
+    print("-- loop")
+    show(in_loop(1))
+    show(in_loop(9))
+  ''',
+}

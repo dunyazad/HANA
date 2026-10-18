@@ -1,0 +1,11 @@
+5:31: error: '?' returns the error early, so the function must return a Result; it returns 'i32'
+6:49: error: '?' returns an error of type 'i64', but the function returns errors of type 'str'
+      wrong_error: fn<Result<i32, str>()> Ok(other()?),
+7:54: error: '?' on an Option returns 'null' early, so the function must return an Option; it returns 'Result<i32, str>'
+8:45: error: '?' works on a Result or an Option, but the value has type 'i32'
+9:37: error: expected 'i32', found 'str'
+10:39: error: expected 'str', found 'i32'
+12:15: error: cannot tell the type of this 'Ok(...)': use it where a Result is expected, as in 'let r: Result<i32, str> = Ok(...)' or 'return Ok(...)'
+14:14: error: '?' returns the error early, so the function must return a Result; it returns 'void'
+15:15: error: 'Ok' takes one value, found 0
+17:14: error: '?' returns the error early, so the function must return a Result; it returns 'void'

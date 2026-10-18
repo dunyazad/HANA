@@ -54,6 +54,67 @@ TypeExpr option_type_expr(TypeExpr value)
     return option;
 }
 
+bool any_contains_try(const std::vector<ExprPtr>& exprs)
+{
+    for (const auto& expr : exprs) {
+        if (contains_try(*expr)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool contains_try(const Expr& expr)
+{
+    switch (expr.kind) {
+    case ExprKind::Try: return true;
+    case ExprKind::Unary: return contains_try(*static_cast<const UnaryExpr&>(expr).operand);
+    case ExprKind::Binary: {
+        const auto& binary = static_cast<const BinaryExpr&>(expr);
+        return contains_try(*binary.lhs) || contains_try(*binary.rhs);
+    }
+    case ExprKind::Conditional: {
+        const auto& cond = static_cast<const ConditionalExpr&>(expr);
+        return contains_try(*cond.condition) || contains_try(*cond.then_value) ||
+               contains_try(*cond.else_value);
+    }
+    case ExprKind::Cast: return contains_try(*static_cast<const CastExpr&>(expr).operand);
+    case ExprKind::Call: {
+        const auto& call = static_cast<const CallExpr&>(expr);
+        return contains_try(*call.callee) || any_contains_try(call.args);
+    }
+    case ExprKind::StructLiteral:
+        for (const auto& field : static_cast<const StructLiteralExpr&>(expr).fields) {
+            if (contains_try(*field.value)) {
+                return true;
+            }
+        }
+        return false;
+    case ExprKind::Tuple: return any_contains_try(static_cast<const TupleExpr&>(expr).elements);
+    case ExprKind::List: return any_contains_try(static_cast<const ListExpr&>(expr).elements);
+    case ExprKind::StringLiteral:
+        return any_contains_try(static_cast<const StringLiteralExpr&>(expr).parts);
+    case ExprKind::Match: {
+        const auto& match = static_cast<const MatchExpr&>(expr);
+        if (contains_try(*match.subject)) {
+            return true;
+        }
+        for (const MatchArm& arm : match.arms) {
+            if ((arm.guard && contains_try(*arm.guard)) || (arm.value && contains_try(*arm.value))) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ExprKind::Member: return contains_try(*static_cast<const MemberExpr&>(expr).object);
+    case ExprKind::Index: {
+        const auto& index = static_cast<const IndexExpr&>(expr);
+        return contains_try(*index.object) || contains_try(*index.index);
+    }
+    default: return false;
+    }
+}
+
 TypeExpr list_type_expr(TypeExpr element)
 {
     TypeExpr list;

@@ -1,0 +1,33 @@
+-- struct
+drop struct
+err failed
+drop struct
+ok 1
+-- sink arg
+drop arg
+err failed
+drop arg
+ok 1
+-- format
+drop fmt
+failed
+drop fmt
+value fmt 1
+-- list
+drop l2
+drop l1
+failed
+-- guard
+drop subject
+err failed
+drop subject
+ok 1
+-- loop
+drop e0
+drop e1
+drop e2
+err failed
+drop e0
+drop e1
+drop e2
+ok 3
