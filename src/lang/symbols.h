@@ -46,6 +46,10 @@ struct FunctionSymbol {
     const Type* return_type = nullptr;
     const FnDecl* decl = nullptr; // null for intrinsics
     Intrinsic intrinsic = Intrinsic::None;
+    // A generic function: its own type parameters. Code is made only for
+    // its instances, which have none.
+    std::vector<const Type*> type_params;
+    const TraitInfo* trait = nullptr; // a method a trait declares
 };
 
 // Result of semantic analysis. Symbols live in deques so the pointers stored
@@ -54,7 +58,17 @@ struct Program {
     std::deque<VarSymbol> vars;
     std::deque<FunctionSymbol> functions;
     std::deque<UserType> types;
-    std::deque<ComposedType> composed_types; // tuples and Options
+    std::deque<ComposedType> composed_types; // tuples, Options and Lists
+    std::deque<TraitInfo> traits;
+    std::deque<TypeParamInfo> type_params;
+    std::deque<Type> param_types;
+    // Copies of generic functions and of the methods of generic types, one
+    // per list of type arguments, checked with those types. Code is made
+    // for these and for the functions that are not generic.
+    std::vector<std::unique_ptr<FnDecl>> instances;
+    // The field defaults of instances of generic types, checked with the
+    // instance's types.
+    std::vector<ExprPtr> instance_defaults;
     const FunctionSymbol* main = nullptr;
 };
 

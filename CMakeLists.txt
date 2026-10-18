@@ -47,12 +47,14 @@ add_library(hana_lang STATIC
     src/lang/move_checker.cpp
     src/lang/access_checker.cpp
     src/lang/ast.cpp
+    src/lang/ast_clone.cpp
     src/lang/types.cpp
     src/lang/sema.cpp
     src/lang/sema_match.cpp
     src/lang/sema_tuple.cpp
     src/lang/sema_option.cpp
     src/lang/sema_list.cpp
+    src/lang/sema_generic.cpp
     src/lang/sema_coverage.cpp
 )
 target_link_libraries(hana_lang PUBLIC hana_support)

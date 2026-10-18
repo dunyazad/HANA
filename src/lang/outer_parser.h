@@ -45,6 +45,12 @@ private:
     bool parse_entry(Module& module);
     std::optional<std::string> parse_key(SourceLocation& location);
     void parse_use(const SourceLocation& location);
+    bool parse_type_params(std::vector<TypeParamDecl>& params);
+    bool parse_bounds(std::vector<NameRef>& bounds);
+    std::unique_ptr<TraitDecl> parse_trait_decl(std::string name, const SourceLocation& location,
+                                                bool is_pub);
+    bool parse_trait_list(std::vector<NameRef>& traits);
+    bool at_value_end();
     std::unique_ptr<TypeDecl> parse_type_decl(std::string name, const SourceLocation& location,
                                               bool is_pub, bool is_enum);
     bool parse_type_member(TypeDecl& decl);
@@ -53,9 +59,10 @@ private:
                      const SourceLocation& location);
     ExprPtr parse_field_default();
     std::unique_ptr<FnDecl> parse_function(std::string name, const SourceLocation& location,
-                                           bool is_pub, TypeDecl* owner);
+                                           bool is_pub, TypeDecl* owner, bool in_trait);
     bool parse_short_signature(Signature& signature);
-    bool parse_object_signature(Signature& signature, std::optional<CodeRegion>& body);
+    bool parse_object_signature(Signature& signature, std::optional<CodeRegion>& body,
+                                bool body_optional);
     bool parse_param_group(Signature& signature);
     bool parse_signature_param(Signature& signature);
     bool parse_param(Param& param, bool& is_self);

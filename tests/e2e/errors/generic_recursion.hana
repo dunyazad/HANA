@@ -1,0 +1,6 @@
+{
+  grow<T>: fn<(sink x: T)> grow([x]),
+  main: fn '''
+    grow(1)
+  ''',
+}

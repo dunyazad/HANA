@@ -1,0 +1,1 @@
+2:32: error: 'grow' is used with ever larger types; a generic function cannot call itself with a type built from its own type parameter, such as 'List<T>' inside it

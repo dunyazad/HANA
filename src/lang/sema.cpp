@@ -138,11 +138,18 @@ std::unique_ptr<Program> Sema::check(Module& module)
 {
     program_ = std::make_unique<Program>();
     declare_intrinsics();
+    declare_builtin_traits();
+    for (auto& decl : module.traits) {
+        declare_trait(*decl);
+    }
     for (auto& decl : module.types) {
         declare_type(*decl);
     }
     for (auto& decl : module.types) {
         declare_type_fields(*decl);
+    }
+    for (auto& decl : module.traits) {
+        declare_trait_methods(*decl);
     }
     for (const auto& decl : module.types) {
         check_type_containment(*decl);
@@ -156,6 +163,10 @@ std::unique_ptr<Program> Sema::check(Module& module)
             declare_method(*decl, *method);
         }
     }
+    declare_waiting_instance_methods();
+    for (const auto& decl : module.types) {
+        check_trait_conformance(*decl);
+    }
     for (auto& decl : module.types) {
         check_field_defaults(*decl);
     }
@@ -167,6 +178,7 @@ std::unique_ptr<Program> Sema::check(Module& module)
             check_function_body(*method);
         }
     }
+    check_pending_instances();
     // Moves and accesses are checked only on a well-typed module, so every
     // expression has its type and every name its symbol.
     if (!diagnostics_->has_errors()) {
@@ -216,15 +228,30 @@ void Sema::declare_type(TypeDecl& decl)
         diagnostics_->note(existing->location, "previous definition is here");
         return;
     }
+    if (traits_.count(decl.name) != 0) {
+        diagnostics_->error(decl.location, "'" + decl.name + "' is already defined as a trait");
+        return;
+    }
     UserType& info = program_->types.emplace_back();
     info.name = decl.name;
     info.location = decl.location;
     info.is_copy = decl.is_copy;
+    info.decl = &decl;
+    info.traits = resolve_declared_traits(decl);
+    info.type_params = declare_type_params(decl.type_params);
+    if (!info.type_params.empty()) {
+        // Inside its declaration the generic type is 'Pair<T>'.
+        info.name += "<";
+        for (std::size_t i = 0; i < info.type_params.size(); ++i) {
+            info.name += (i == 0 ? "" : ", ") + std::string(info.type_params[i]->name);
+        }
+        info.name += ">";
+    }
     info.type.kind = decl.is_enum ? TypeKind::Enum : TypeKind::Struct;
     info.type.name = info.name;
     info.type.user = &info;
     decl.type = &info.type;
-    types_[info.name] = &info;
+    types_[decl.name] = &info;
 }
 
 void Sema::declare_type_fields(TypeDecl& decl)
@@ -233,6 +260,7 @@ void Sema::declare_type_fields(TypeDecl& decl)
         return; // duplicate definition, already reported
     }
     UserType& info = *lookup_type(decl.name);
+    push_type_names(decl.type_params, info.type_params);
     declare_fields(decl.fields, info.fields, "'" + decl.name + "'");
     for (CaseDecl& entry : decl.cases) {
         if (info.find_case(entry.name) >= 0) {
@@ -245,6 +273,7 @@ void Sema::declare_type_fields(TypeDecl& decl)
         target.location = entry.location;
         declare_fields(entry.fields, target.fields, "case '" + decl.name + "." + entry.name + "'");
     }
+    pop_type_names(1);
 }
 
 void Sema::declare_fields(std::vector<FieldDecl>& decls, std::vector<FieldInfo>& fields,
@@ -361,6 +390,7 @@ void Sema::check_field_defaults(TypeDecl& decl)
         return;
     }
     const UserType& info = *decl.type->user;
+    push_type_names(decl.type_params, info.type_params);
     check_defaults(decl.fields, info.fields);
     for (CaseDecl& entry : decl.cases) {
         const int index = info.find_case(entry.name);
@@ -368,6 +398,7 @@ void Sema::check_field_defaults(TypeDecl& decl)
             check_defaults(entry.fields, info.cases[static_cast<std::size_t>(index)].fields);
         }
     }
+    pop_type_names(1);
 }
 
 void Sema::check_defaults(std::vector<FieldDecl>& decls, const std::vector<FieldInfo>& fields)
@@ -386,18 +417,38 @@ void Sema::check_defaults(std::vector<FieldDecl>& decls, const std::vector<Field
     }
 }
 
-FunctionSymbol& Sema::create_function_symbol(FnDecl& function, std::string name)
+// The signature is resolved with the names an instance binds, and with the
+// function's own type parameters; a method of a generic type is declared
+// with the type's parameter names already visible. 'attach' makes the
+// symbol the declaration's own (an instance of a generic type shares the
+// declarations of its methods that are not copied).
+FunctionSymbol& Sema::create_function_symbol(FnDecl& function, std::string name, bool attach,
+                                             const std::vector<const Type*>* own_params)
 {
     FunctionSymbol& symbol = program_->functions.emplace_back();
     symbol.name = std::move(name);
     symbol.decl = &function;
     symbol.self_convention = function.self_convention;
+    int pushed = 0;
+    if (!function.type_bindings.empty()) {
+        push_type_bindings(function.type_bindings);
+        ++pushed;
+    }
+    if (!function.type_params.empty()) {
+        symbol.type_params =
+            own_params != nullptr ? *own_params : declare_type_params(function.type_params);
+        push_type_names(function.type_params, symbol.type_params);
+        ++pushed;
+    }
     for (const Param& param : function.params) {
         symbol.param_types.push_back(resolve_type(param.type));
         symbol.conventions.push_back(param.convention);
     }
     symbol.return_type = function.return_type ? resolve_type(*function.return_type) : void_type();
-    function.symbol = &symbol;
+    pop_type_names(pushed);
+    if (attach) {
+        function.symbol = &symbol;
+    }
     return symbol;
 }
 
@@ -419,7 +470,9 @@ void Sema::declare_method(TypeDecl& decl, FnDecl& method)
         diagnostics_->note(existing->second->decl->location, "previous definition is here");
         return;
     }
-    FunctionSymbol& symbol = create_function_symbol(method, decl.name + "." + method.name);
+    push_type_names(decl.type_params, info.type_params);
+    FunctionSymbol& symbol = create_function_symbol(method, info.name + "." + method.name);
+    pop_type_names(1);
     symbol.owner = &info;
     info.methods[method.name] = &symbol;
     if (method.name == "drop") {
@@ -475,7 +528,9 @@ void Sema::declare_function(FnDecl& function)
     }
     FunctionSymbol& symbol = create_function_symbol(function, function.name);
     functions_[symbol.name] = &symbol;
-    if (symbol.name == "main") {
+    if (symbol.name == "main" && !symbol.type_params.empty()) {
+        diagnostics_->error(function.location, "'main' cannot be generic");
+    } else if (symbol.name == "main") {
         check_main_signature(symbol);
         program_->main = &symbol;
     }
@@ -495,11 +550,13 @@ void Sema::check_main_signature(const FunctionSymbol& symbol)
 
 void Sema::check_function_body(FnDecl& function)
 {
-    if (function.symbol == nullptr) {
+    if (function.symbol == nullptr || !function.has_body) {
         return; // duplicate definition, already reported
     }
+    const int pushed = push_function_type_names(function);
     infer_literal_variables(function);
     check_body_once(function);
+    pop_type_names(pushed);
 }
 
 void Sema::check_body_once(FnDecl& function)
@@ -530,7 +587,11 @@ void Sema::check_body_once(FnDecl& function)
 
 void Sema::declare_self(FnDecl& function)
 {
-    if (!function.self_convention || function.owner == nullptr || function.owner->type == nullptr) {
+    const Type* self_type = function.self_type;
+    if (self_type == nullptr && function.owner != nullptr) {
+        self_type = function.owner->type;
+    }
+    if (!function.self_convention || self_type == nullptr) {
         return;
     }
     VarKind kind = VarKind::Param;
@@ -539,8 +600,8 @@ void Sema::declare_self(FnDecl& function)
     } else if (*function.self_convention == ParamConvention::Sink) {
         kind = VarKind::SinkParam;
     }
-    function.self_symbol = declare_var("self", function.owner->type, kind,
-                                       kind == VarKind::InoutParam, function.self_location);
+    function.self_symbol = declare_var("self", self_type, kind, kind == VarKind::InoutParam,
+                                       function.self_location);
 }
 
 // A variable initialized with an untyped literal and no declared type takes
@@ -688,6 +749,10 @@ const Type* Sema::unify(const Type* a, const Type* b)
         const Type* value = unify(a->option_value(), b->option_value());
         return value != nullptr ? option_type(value) : nullptr;
     }
+    if (a->is_list() && b->is_list()) {
+        const Type* element = unify(a->list_element(), b->list_element());
+        return element != nullptr ? list_type(element) : nullptr;
+    }
     return nullptr;
 }
 
@@ -715,14 +780,32 @@ const Type* Sema::resolve_type(const TypeExpr& type)
         const Type* element = resolve_type(type.elements.front());
         return element->is_error() ? element : list_type(element);
     }
+    if (type.has_arguments) {
+        return resolve_generic_type(type);
+    }
     if (!type.elements.empty()) {
         return resolve_tuple_type(type);
+    }
+    if (const Type* named = lookup_type_name(type.name)) {
+        return named;
     }
     if (const Type* builtin = find_builtin_type(type.name)) {
         return builtin;
     }
     if (const UserType* info = lookup_type(type.name)) {
+        if (!info->type_params.empty()) {
+            diagnostics_->error(type.location, "'" + type.name + "' is generic; write its type "
+                                                                 "arguments, as in '" +
+                                                   type.name + "<i32>'");
+            return error_type();
+        }
         return &info->type;
+    }
+    if (traits_.count(type.name) != 0) {
+        diagnostics_->error(type.location, "'" + type.name + "' is a trait, not a type; use it as "
+                                                             "a bound, as in 'f<T: " +
+                                               type.name + ">'");
+        return error_type();
     }
     diagnostics_->error(type.location, "unknown type '" + type.name + "'");
     return error_type();
@@ -1037,9 +1120,9 @@ const Type* Sema::check_expr_value(Expr& expr, const Type* expected)
     case ExprKind::Binary: type = check_binary(static_cast<BinaryExpr&>(expr), expected); break;
     case ExprKind::Call: type = check_call(static_cast<CallExpr&>(expr), expected); break;
     case ExprKind::StructLiteral:
-        type = check_struct_literal(static_cast<StructLiteralExpr&>(expr));
+        type = check_struct_literal(static_cast<StructLiteralExpr&>(expr), expected);
         break;
-    case ExprKind::Member: type = check_member(static_cast<MemberExpr&>(expr)); break;
+    case ExprKind::Member: type = check_member(static_cast<MemberExpr&>(expr), expected); break;
     case ExprKind::Match:
         type = check_match_expression(static_cast<MatchExpr&>(expr), expected);
         break;
@@ -1093,7 +1176,8 @@ const Type* Sema::check_string_literal(StringLiteralExpr& lit)
         const Type* type = check_expr(*part, nullptr);
         if (type->is_void()) {
             diagnostics_->error(part->location, "expression has no value to insert");
-        } else if (type->is_user() || type->is_tuple() || type->is_option() || type->is_list()) {
+        } else if (type->is_user() || type->is_tuple() || type->is_option() || type->is_list() ||
+                   type->is_param()) {
             check_printable(type, part->location);
         }
     }
@@ -1278,7 +1362,8 @@ const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
     case BinaryOp::Eq:
     case BinaryOp::Ne:
         valid = operand->is_numeric() || operand->kind == TypeKind::Bool ||
-                operand->kind == TypeKind::Char || operand->kind == TypeKind::Str;
+                operand->kind == TypeKind::Char || operand->kind == TypeKind::Str ||
+                has_bound(operand, BuiltinTrait::Eq);
         result = bool_type();
         break;
     case BinaryOp::Lt:
@@ -1286,13 +1371,20 @@ const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
     case BinaryOp::Gt:
     case BinaryOp::Ge:
         valid = operand->is_numeric() || operand->kind == TypeKind::Char ||
-                operand->kind == TypeKind::Str;
+                operand->kind == TypeKind::Str || has_bound(operand, BuiltinTrait::Ord);
         result = bool_type();
         break;
     case BinaryOp::And:
     case BinaryOp::Or:
         valid = operand->kind == TypeKind::Bool;
         break;
+    }
+    if (!valid && operand->is_param() && is_comparison(op)) {
+        const char* trait = op == BinaryOp::Eq || op == BinaryOp::Ne ? "Eq" : "Ord";
+        diagnostics_->error(location, std::string("operator '") + binary_op_spelling(op) +
+                                         "' needs '" + trait + "'; write '" +
+                                         std::string(operand->name) + ": " + trait + "'");
+        return error_type();
     }
     if (!valid) {
         diagnostics_->error(location, std::string("operator '") + binary_op_spelling(op) +
@@ -1304,16 +1396,29 @@ const Type* Sema::binary_result_type(BinaryOp op, const Type* operand,
 
 // 'Name { field: value, ... }' or 'Enum.Case { field: value, ... }': every
 // field without a default must be given, each at most once.
-const Type* Sema::check_struct_literal(StructLiteralExpr& lit)
+const Type* Sema::check_struct_literal(StructLiteralExpr& lit, const Type* expected)
 {
-    const std::vector<FieldInfo>* fields = literal_fields(lit);
+    const UserType* found = lookup_type(lit.type_name);
+    if (found != nullptr && !found->type_params.empty()) {
+        found = infer_literal_type(lit, *found, expected);
+        if (found == nullptr) {
+            return error_type(); // the field values were checked while inferring
+        }
+    } else if (found == nullptr && lookup_type_name(lit.type_name) != nullptr) {
+        diagnostics_->error(lit.location, "'" + lit.type_name + "' is a type parameter; values of "
+                                                                "it cannot be made with '{ ... }'");
+        found = nullptr;
+    } else if (found == nullptr) {
+        diagnostics_->error(lit.location, "unknown type '" + lit.type_name + "'");
+    }
+    const std::vector<FieldInfo>* fields = found != nullptr ? literal_fields(lit, *found) : nullptr;
     if (fields == nullptr) {
         for (auto& field : lit.fields) {
             check_expr(*field.value, nullptr);
         }
         return error_type();
     }
-    const UserType& info = *lookup_type(lit.type_name);
+    const UserType& info = *found;
     const std::string written =
         lit.case_name.empty() ? info.name : info.name + "." + lit.case_name;
     lit.field_order.assign(fields->size(), -1);
@@ -1341,13 +1446,9 @@ const Type* Sema::check_struct_literal(StructLiteralExpr& lit)
 }
 
 // The fields a struct value or an enum case takes, or null after an error.
-const std::vector<FieldInfo>* Sema::literal_fields(StructLiteralExpr& lit)
+const std::vector<FieldInfo>* Sema::literal_fields(StructLiteralExpr& lit, const UserType& type)
 {
-    const UserType* info = lookup_type(lit.type_name);
-    if (info == nullptr) {
-        diagnostics_->error(lit.location, "unknown type '" + lit.type_name + "'");
-        return nullptr;
-    }
+    const UserType* info = &type;
     if (!info->is_enum()) {
         if (!lit.case_name.empty()) {
             diagnostics_->error(lit.case_location, "'" + info->name + "' is a struct; create a value "
@@ -1404,10 +1505,10 @@ std::string Sema::type_name_hint(const UserType& info)
 
 // A field read 'value.field', or an enum case without fields 'Color.Red'.
 // Calls of methods are handled by check_call.
-const Type* Sema::check_member(MemberExpr& member)
+const Type* Sema::check_member(MemberExpr& member, const Type* expected)
 {
     if (const UserType* info = static_type_name(*member.object)) {
-        return check_static_member(member, *info);
+        return check_static_member(member, *info, expected);
     }
     const Type* object = check_expr(*member.object, nullptr);
     if (object->is_error()) {
@@ -1442,8 +1543,28 @@ const Type* Sema::check_member(MemberExpr& member)
 }
 
 // 'Type.member' outside a call: only an enum case without fields is a value.
-const Type* Sema::check_static_member(MemberExpr& member, const UserType& info)
+// For a generic enum the expected type tells the instance: 'Maybe.None'
+// where a 'Maybe<i32>' is expected.
+const Type* Sema::check_static_member(MemberExpr& member, const UserType& generic,
+                                      const Type* expected)
 {
+    const UserType* chosen = &generic;
+    if (!generic.type_params.empty()) {
+        if (expected != nullptr && expected->is_option()) {
+            expected = expected->option_value();
+        }
+        if (expected == nullptr || !expected->is_user() ||
+            &expected->user->origin() != &generic) {
+            diagnostics_->error(member.location,
+                               "cannot tell the type arguments of '" + generic.decl->name + "." +
+                                   member.member + "'; write its type, as in 'let v: " +
+                                   generic.decl->name + "<i32> = " + generic.decl->name + "." +
+                                   member.member + "'");
+            return error_type();
+        }
+        chosen = expected->user;
+    }
+    const UserType& info = *chosen;
     member.object->type = &info.type;
     const int index = info.find_case(member.member);
     if (index < 0) {
@@ -1485,7 +1606,7 @@ const Type* Sema::check_call(CallExpr& call, const Type* expected)
         return check_function_call(call, static_cast<NameExpr&>(*call.callee), expected);
     }
     if (call.callee->kind == ExprKind::Member) {
-        return check_method_call(call, static_cast<MemberExpr&>(*call.callee));
+        return check_method_call(call, static_cast<MemberExpr&>(*call.callee), expected);
     }
     check_expr(*call.callee, nullptr);
     check_args_without_callee(call);
@@ -1520,13 +1641,18 @@ const Type* Sema::check_function_call(CallExpr& call, NameExpr& callee, const Ty
     if (function->intrinsic != Intrinsic::None) {
         return check_intrinsic_call(call, *function);
     }
+    if (!function->type_params.empty()) {
+        return check_generic_function_call(call, callee, *function, expected);
+    }
     check_call_arguments(call, *function, std::nullopt);
     return function->return_type;
 }
 
 // 'Point.new(...)' calls a function of the struct without 'self';
 // 'p.area()' calls a method on the value p.
-const Type* Sema::check_method_call(CallExpr& call, MemberExpr& callee)
+// Generic methods, functions of generic types ('Pair.new(...)') and trait
+// methods called on a type parameter have type parameters to infer.
+const Type* Sema::check_method_call(CallExpr& call, MemberExpr& callee, const Type* expected)
 {
     callee.type = void_type();
     const FunctionSymbol* function = nullptr;
@@ -1534,15 +1660,36 @@ const Type* Sema::check_method_call(CallExpr& call, MemberExpr& callee)
     if (const UserType* info = static_type_name(*callee.object)) {
         callee.object->type = &info->type;
         function = find_static_function(callee, *info);
+        if (function != nullptr && (!info->type_params.empty() || !function->type_params.empty())) {
+            std::vector<const Type*> params = info->type_params;
+            params.insert(params.end(), function->type_params.begin(), function->type_params.end());
+            return check_generic_method_call(call, callee, *function, params, {}, std::nullopt,
+                                             expected);
+        }
     } else {
         const Type* object = check_expr(*callee.object, nullptr);
         if (const BuiltinMethod builtin = builtin_method(object, callee.member);
             builtin != BuiltinMethod::None) {
             return check_builtin_method_call(call, callee, builtin, object);
         }
+        if (object->is_param()) {
+            function = find_trait_method(callee, object);
+            if (function == nullptr) {
+                check_args_without_callee(call);
+                return error_type();
+            }
+            receiver = check_receiver(callee, *function);
+            return check_generic_method_call(call, callee, *function, {},
+                                             {{function->trait->self_type, object}}, receiver,
+                                             expected);
+        }
         function = find_method(callee, object);
         if (function != nullptr) {
             receiver = check_receiver(callee, *function);
+            if (!function->type_params.empty()) {
+                return check_generic_method_call(call, callee, *function, function->type_params,
+                                                 {}, receiver, expected);
+            }
         }
     }
     if (function == nullptr) {
@@ -1684,6 +1831,9 @@ void Sema::check_printable(const Type* type, const SourceLocation& location)
     } else if (type->is_list()) {
         diagnostics_->error(location, "a List cannot be printed yet; print its elements in a "
                                       "'for' loop");
+    } else if (type->is_param()) {
+        diagnostics_->error(location, "a value of type " + quoted(type) +
+                                          " cannot be printed; it is a type parameter");
     }
 }
 

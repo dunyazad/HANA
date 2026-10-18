@@ -965,7 +965,7 @@ std::optional<TypeExpr> CodeParser::parse_type()
     return type;
 }
 
-// A name, 'Option<T>', 'List<T>' or a tuple.
+// A name, a generic type 'Name<A, B>' or a tuple.
 std::optional<TypeExpr> CodeParser::parse_type_without_suffix()
 {
     if (check(TokenKind::Identifier)) {
@@ -974,19 +974,22 @@ std::optional<TypeExpr> CodeParser::parse_type_without_suffix()
         if (!check(TokenKind::Lt)) {
             return type;
         }
-        if (type.name != "Option" && type.name != "List") {
-            error_at(peek(), "generic types other than 'Option' and 'List' are not supported yet");
-            return std::nullopt;
-        }
         advance(); // '<'
-        std::optional<TypeExpr> argument = parse_type();
-        if (!argument || !expect_type_close(type.name)) {
+        std::vector<TypeExpr> arguments;
+        for (;;) {
+            std::optional<TypeExpr> argument = parse_type();
+            if (!argument) {
+                return std::nullopt;
+            }
+            arguments.push_back(std::move(*argument));
+            if (!match(TokenKind::Comma)) {
+                break;
+            }
+        }
+        if (!expect_type_close(type.name)) {
             return std::nullopt;
         }
-        TypeExpr generic;
-        make_generic_type_expr(type.name, std::move(*argument), generic);
-        generic.location = type.location;
-        return generic;
+        return generic_type_expr(type.name, std::move(arguments), type.location);
     }
     if (check(TokenKind::LParen)) {
         return parse_tuple_type();

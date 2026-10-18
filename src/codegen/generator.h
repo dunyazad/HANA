@@ -38,6 +38,14 @@ std::string mangle_function_name(const std::string& name);
 // overlaps an inout argument.
 bool passed_by_pointer(ParamConvention convention, const Type* type);
 
+// True for a function code is made for: not generic, and not a method of a
+// generic type (its instances' copies are).
+bool has_code(const FnDecl& decl);
+
+// The type of 'self' in a method; an instance's copy of a method has its
+// own.
+const Type* self_type_of(const FnDecl& decl);
+
 struct LoopTargets {
     llvm::BasicBlock* break_block;
     llvm::BasicBlock* continue_block;

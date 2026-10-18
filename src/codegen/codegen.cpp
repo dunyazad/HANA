@@ -56,6 +56,21 @@ bool is_place_expr(const Expr& expr)
     return false;
 }
 
+bool has_code(const FnDecl& decl)
+{
+    if (!decl.has_body || decl.symbol == nullptr || !decl.symbol->type_params.empty()) {
+        return false;
+    }
+    // A method of a generic type has code only in the copies its instances
+    // make, which bind the type's parameters.
+    return decl.owner == nullptr || decl.owner->type_params.empty() || !decl.type_bindings.empty();
+}
+
+const Type* self_type_of(const FnDecl& decl)
+{
+    return decl.self_type != nullptr ? decl.self_type : decl.owner->type;
+}
+
 bool passed_by_pointer(ParamConvention convention, const Type* type)
 {
     return convention == ParamConvention::Inout ||
@@ -81,23 +96,28 @@ CodeGenerator::CodeGenerator(llvm::LLVMContext& context, llvm::Module& module, c
                                           "hana.list");
 }
 
+// Code is made for every function that is not generic: the program's own,
+// and the instances of generic functions and of methods of generic types.
 void CodeGenerator::generate(const lang::Module& ast)
 {
+    std::vector<const FnDecl*> functions;
     for (const auto& function : ast.functions) {
+        functions.push_back(function.get());
+    }
+    for (const auto& decl : ast.types) {
+        for (const auto& method : decl->methods) {
+            functions.push_back(method.get());
+        }
+    }
+    for (const auto& instance : program_.instances) {
+        functions.push_back(instance.get());
+    }
+    std::erase_if(functions, [](const FnDecl* decl) { return !has_code(*decl); });
+    for (const FnDecl* function : functions) {
         declare_function(*function);
     }
-    for (const auto& decl : ast.types) {
-        for (const auto& method : decl->methods) {
-            declare_function(*method);
-        }
-    }
-    for (const auto& function : ast.functions) {
+    for (const FnDecl* function : functions) {
         emit_function(*function);
-    }
-    for (const auto& decl : ast.types) {
-        for (const auto& method : decl->methods) {
-            emit_function(*method);
-        }
     }
     if (program_.main != nullptr) {
         emit_c_main();
@@ -128,7 +148,8 @@ llvm::Type* CodeGenerator::llvm_type(const Type* type)
     case TypeKind::Tuple: return tuple_type(*type);
     case TypeKind::Option: return option_type(*type);
     case TypeKind::List: return list_type_;
-    case TypeKind::Error: break;
+    case TypeKind::Param:
+    case TypeKind::Error: break; // code is made only for concrete types
     }
     return llvm::Type::getVoidTy(context_);
 }
@@ -218,7 +239,7 @@ void CodeGenerator::declare_function(const FnDecl& decl)
     const FunctionSymbol& symbol = *decl.symbol;
     std::vector<llvm::Type*> params;
     if (symbol.self_convention) {
-        params.push_back(param_llvm_type(*symbol.self_convention, decl.owner->type));
+        params.push_back(param_llvm_type(*symbol.self_convention, self_type_of(decl)));
     }
     for (std::size_t i = 0; i < symbol.param_types.size(); ++i) {
         params.push_back(param_llvm_type(symbol.conventions[i], symbol.param_types[i]));

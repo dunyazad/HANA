@@ -1,0 +1,7 @@
+4:13: error: use of moved value 'x'
+3:13: note: 'x' was moved here
+10:24: error: cannot move 'x' because it is a read-only parameter; declare it 'sink' to take ownership
+14:15: error: use of moved value 'x'
+14:15: note: 'x' was moved here in the previous iteration of the loop
+14:7: error: cannot change 'xs' while it is in use
+13:14: note: the loop over 'xs' starts here

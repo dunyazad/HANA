@@ -15,19 +15,23 @@ struct Type;
 struct VarSymbol;
 struct FunctionSymbol;
 struct TypeDecl;
+struct TraitInfo;
 
 // ---------------------------------------------------------------------------
 // Types as written in source
 
 // A type as written: a name; a tuple '(i32, f64)' whose 'elements' are its
-// element types; or an Option 'Option<i32>' / 'i32?' whose one element is
-// the value type. 'name' is the written text.
+// element types; an Option 'Option<i32>' / 'i32?' or a 'List<T>' whose one
+// element is the value type; or a generic type 'Pair<i32>' whose elements
+// are the type arguments of 'generic_name'. 'name' is the written text.
 struct TypeExpr {
     std::string name;
     SourceLocation location;
-    std::vector<TypeExpr> elements{}; // tuple, or the value type of an Option or List
+    std::vector<TypeExpr> elements{}; // tuple elements, or type arguments
     bool is_option = false;
     bool is_list = false;
+    bool has_arguments = false; // 'Pair<i32>'
+    std::string generic_name{};  // 'Pair' of 'Pair<i32>'
 };
 
 // ---------------------------------------------------------------------------
@@ -297,7 +301,6 @@ enum class BuiltinMethod {
     ListClear,   // 'xs.clear()'
 };
 
-// 'object.member': a field, or the callee of a method call.
 // How a built-in method takes its receiver and its arguments.
 struct BuiltinSignature {
     ParamConvention self = ParamConvention::Read;
@@ -306,6 +309,7 @@ struct BuiltinSignature {
 
 BuiltinSignature builtin_signature(BuiltinMethod method);
 
+// 'object.member': a field, or the callee of a method call.
 struct MemberExpr final : Expr {
     MemberExpr(SourceLocation location_value, ExprPtr object_value, std::string member_value)
         : Expr(ExprKind::Member, location_value)
@@ -558,10 +562,25 @@ struct Param {
     const VarSymbol* symbol = nullptr;
 };
 
+// A name written in a declaration, such as a trait in 'T: Ord' or 'is'.
+struct NameRef {
+    std::string name;
+    SourceLocation location;
+};
+
+// 'T' or 'T: Ord + Clone' in 'max<T: Ord>: fn...' or 'Pair<T>: struct'.
+struct TypeParamDecl {
+    std::string name;
+    SourceLocation location;
+    std::vector<NameRef> bounds;
+};
+
 struct FnDecl {
     std::string name;
     SourceLocation location;
     bool is_pub = false;
+    std::vector<TypeParamDecl> type_params;
+    bool has_body = true; // false for a method a trait only declares
     // Methods: the struct that owns the function and, when it takes 'self',
     // how 'self' is passed. 'self' is not part of 'params'.
     TypeDecl* owner = nullptr;
@@ -572,6 +591,11 @@ struct FnDecl {
     Block body;
     const FunctionSymbol* symbol = nullptr;
     const VarSymbol* self_symbol = nullptr;
+    // A copy of a generic function or of a method of a generic type, made
+    // for one list of type arguments: the type of 'self' and the types the
+    // type parameters stand for. Set by semantic analysis.
+    const Type* self_type = nullptr;
+    std::vector<std::pair<std::string, const Type*>> type_bindings;
 };
 
 struct FieldDecl {
@@ -593,6 +617,8 @@ struct TypeDecl {
     std::string name;
     SourceLocation location;
     bool is_pub = false;
+    std::vector<TypeParamDecl> type_params; // 'Pair<T>: struct'
+    std::vector<NameRef> traits;            // 'is: [Shape, Show]'
     bool is_enum = false;
     bool is_copy = false; // 'struct copy { ... }', 'enum copy { ... }'
     std::vector<FieldDecl> fields; // struct
@@ -601,8 +627,19 @@ struct TypeDecl {
     const Type* type = nullptr;
 };
 
+// 'Shape: trait { area: fn<f32(self)> }': methods every type that says
+// 'is: [Shape]' must have.
+struct TraitDecl {
+    std::string name;
+    SourceLocation location;
+    bool is_pub = false;
+    std::vector<std::unique_ptr<FnDecl>> methods;
+    const TraitInfo* trait = nullptr; // set by semantic analysis
+};
+
 struct Module {
     std::vector<std::unique_ptr<TypeDecl>> types; // structs and enums
+    std::vector<std::unique_ptr<TraitDecl>> traits;
     std::vector<std::unique_ptr<FnDecl>> functions;
 };
 
@@ -610,8 +647,10 @@ struct Module {
 TypeExpr option_type_expr(TypeExpr value);
 // 'List<T>' for the element type T.
 TypeExpr list_type_expr(TypeExpr element);
-// 'Option<T>' or 'List<T>' for a generic type name; false for other names.
-bool make_generic_type_expr(const std::string& name, TypeExpr argument, TypeExpr& out);
+// 'Name<A, B>': 'Option<T>' and 'List<T>' with one argument are the
+// built-in types, any other name a generic type declared in the program.
+TypeExpr generic_type_expr(const std::string& name, std::vector<TypeExpr> arguments,
+                           const SourceLocation& location);
 
 // "(i32, f64)" for the element types of a tuple.
 std::string tuple_type_text(const std::vector<std::string>& element_names);

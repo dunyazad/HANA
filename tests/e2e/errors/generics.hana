@@ -1,0 +1,33 @@
+{
+  Shape: trait {
+    area: fn<f64(self)>,
+    scale: fn<(inout self, by: f64)>,
+  },
+  Circle: struct {
+    is: [Shape],
+    radius: f64,
+    area: fn<i32(self)> 1,
+  },
+  Dot: struct {
+    is: [Clone, Nope],
+    x: i32,
+  },
+  Box<T>: struct { value: T },
+  Sorted<T: Ord>: struct { items: List<T> },
+  P: struct { x: i32 },
+  same<T>: fn<bool(a: T, b: T)> a == b,
+  less<T: Eq>: fn<bool(a: T, b: T)> a < b,
+  show<T>: fn<(x: T)> print(x),
+  area_of<T>: fn<f64(x: T)> x.area(),
+  copy_of<T>: fn<T(x: T)> x.clone(),
+  add<T>: fn<T(sink a: T, sink b: T)> a + b,
+  make<T>: fn<List<T>()> [],
+  grow<T>: fn<(sink x: T)> grow([x]),
+  main: fn '''
+    let b: Box = Box { value: 1 }
+    let s: Sorted<P> = Sorted { items: [] }
+    let e = make()
+    let m = Box { value: [] }
+    print(same(1, "a"))
+  ''',
+}

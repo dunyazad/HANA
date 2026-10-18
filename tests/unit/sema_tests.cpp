@@ -623,3 +623,41 @@ TEST(sema_list_elements_stay_in_the_list)
                  "    ps.push(P { s: \"b\" })\n''' }")
                ->has_error("cannot change 'ps' while it is in use"));
 }
+
+TEST(sema_generic_instances_are_shared)
+{
+    auto r = check("{ Box<T>: struct { value: T },\n"
+                   "  id<T>: fn<T(sink x: T)> x,\n"
+                   "  f: fn '''\n  let a = Box { value: 1 }\n  let b: Box<i32> = Box { value: 2 }\n"
+                   "  let c = id(3)\n  let d = id(4)\n''' }");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(r->program->instances.size() == 1); // id<i32>
+    int boxes = 0;
+    for (const UserType& type : r->program->types) {
+        boxes += type.name == "Box<i32>" ? 1 : 0;
+    }
+    EXPECT(boxes == 1);
+}
+
+TEST(sema_generic_bodies_use_only_their_bounds)
+{
+    EXPECT(check("{ f<T>: fn<bool(a: T, b: T)> a < b }")->has_error("operator '<' needs 'Ord'"));
+    EXPECT(!check("{ f<T: Ord>: fn<bool(a: T, b: T)> a < b }")->diagnostics.has_errors());
+    EXPECT(check("{ f<T>: fn<T(x: T)> x }")->has_error("cannot move 'x'"));
+    EXPECT(!check("{ f<T: Copy>: fn<T(x: T)> x }")->diagnostics.has_errors());
+    EXPECT(check("{ S: struct { v: i32 }, f<T: Ord>: fn<(x: T)> pass,\n"
+                 "  g: fn f(S { v: 1 }) }")
+               ->has_error("'f' needs 'T: Ord', but 'S' is not 'Ord'"));
+}
+
+TEST(sema_traits_are_checked)
+{
+    auto r = check("{ Shape: trait { area: fn<f64(self)> },\n"
+                   "  Sq: struct { is: [Shape], s: f64, area: fn<f64(self)> self.s * self.s },\n"
+                   "  total<T: Shape>: fn<f64(xs: List<T>)> '''\n  var t = 0.0\n  for x in xs:\n"
+                   "    t += x.area()\n  return t\n''',\n"
+                   "  g: fn print(total([Sq { s: 2.0 }])) }");
+    EXPECT(!r->diagnostics.has_errors());
+    EXPECT(check("{ Shape: trait { area: fn<f64(self)> }, Sq: struct { is: [Shape], s: f64 } }")
+               ->has_error("'Sq' says it is 'Shape', but has no method 'area'"));
+}

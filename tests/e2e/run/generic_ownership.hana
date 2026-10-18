@@ -1,0 +1,52 @@
+{
+  Noisy: struct {
+    name: str,
+    drop: fn<(inout self)> print(f"drop {self.name}"),
+  },
+  Holder<T>: struct {
+    item: T,
+    label: str = "holder",
+    drop: fn<(inout self)> print(f"drop {self.label}"),
+  },
+  Pair<A, B>: struct {
+    a: A,
+    b: B,
+  },
+  Tree<T>: enum {
+    Leaf: { value: T },
+    Node: { children: List<Tree<T>> },
+    count: fn<i32(self)> '''
+      match self:
+        Leaf(_): return 1
+        Node(children):
+          var total = 0
+          for child in children:
+            total += child.count()
+          return total
+    ''',
+  },
+  identity<T>: fn<T(sink x: T)> x,
+  pair_of<A, B>: fn<Pair<A, B>(sink a: A, sink b: B)> Pair { a: a, b: b },
+  sum<T: Copy>: fn<i32(xs: List<T>, f: i32)> '''
+    var total = 0
+    for x in xs:
+      total += f
+    return total
+  ''',
+  main: fn '''
+    var i = 0
+    let j = identity(i)
+    let k: i64 = j
+    print(k)
+    let h = Holder { item: Noisy { name: "inside" } }
+    let p = pair_of(1, "one")
+    print(f"{p.a} {p.b}")
+    let q = pair_of(Noisy { name: "q" }, [1, 2])
+    print(q.b.len())
+    let t = Tree.Node { children: [Tree.Leaf { value: 1 }, Tree.Node { children: [Tree.Leaf { value: 2 }, Tree.Leaf { value: 3 }] }] }
+    print(t.count())
+    let c = Pair { a: "x", b: 2.5 }.clone()
+    print(c.b)
+    print(sum([1.5, 2.5], 2))
+  ''',
+}

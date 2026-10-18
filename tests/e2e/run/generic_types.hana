@@ -1,0 +1,82 @@
+{
+  Maybe<T>: enum {
+    Some: { value: T },
+    None: {},
+    value_or: fn<T(sink self, sink fallback: T)> '''
+      match self:
+        Some(v): return v
+        None: return fallback
+    ''',
+  },
+  Stack<T>: struct {
+    items: List<T> = [],
+    push: fn<(inout self, sink item: T)> self.items.push(item),
+    pop: fn<Maybe<T>(inout self)> '''
+      match self.items.pop():
+        Some(v): return Maybe.Some { value: v }
+        null: return Maybe.None
+    ''',
+    size: fn<usize(self)> self.items.len(),
+    new: fn<Stack<T>()> Stack { items: [] },
+    map<U>: fn<Stack<U>(sink self, f: Doubler)> '''
+      var out: Stack<U> = Stack { items: [] }
+      return out
+    ''',
+  },
+  Doubler: struct { factor: i32 },
+  Counter: trait {
+    bump: fn<(inout self, by: i32)>,
+    total: fn<i32(self)>,
+  },
+  Tally: struct {
+    is: [Counter],
+    count: i32 = 0,
+    log: List<str> = [],
+    bump: fn<(inout self, by: i32)> '''
+      self.count += by
+      self.log.push(f"+{by}")
+    ''',
+    total: fn<i32(self)> self.count,
+  },
+  bump_all<C: Counter>: fn<(inout c: C, times: i32)> '''
+    for i in 0..times:
+      c.bump(i)
+  ''',
+  largest<T: Ord + Clone>: fn<T(xs: List<T>)> '''
+    var best = xs[0].clone()
+    for x in xs:
+      if x > best:
+        best = x.clone()
+    return best
+  ''',
+  wrap<T>: fn<Maybe<T>(sink x: T)> Maybe.Some { value: x },
+  count_down<T: Copy>: fn<i32(x: T, n: i32)> '''
+    if n == 0:
+      return 0
+    return 1 + count_down(x, n - 1)
+  ''',
+  main: fn '''
+    var s: Stack<str> = Stack.new()
+    s.push("a")
+    s.push(f"b{1}")
+    print(s.size())
+    print(s.pop().value_or("none"))
+    print(s.pop().value_or("none"))
+    print(s.pop().value_or("none"))
+    var t = Stack { items: [1, 2, 3] }
+    print(t.pop().value_or(0))
+    let e: Maybe<i32> = Maybe.None
+    print(e.value_or(42))
+    print(wrap(7).value_or(0))
+    print(wrap("w").value_or("x"))
+    var tally = Tally {}
+    bump_all(&tally, 4)
+    print(tally.total())
+    print(tally.log.len())
+    print(largest([3, 9, 2]))
+    print(largest(["pear", "apple", "zoo"]))
+    print(count_down(1.5, 3))
+    let m: Stack<str> = t.map(Doubler { factor: 2 })
+    print(m.size())
+  ''',
+}

@@ -125,6 +125,10 @@ bool OuterParser::parse_entry(Module& module)
     if (!key) {
         return false;
     }
+    std::vector<TypeParamDecl> type_params;
+    if (peek() == '<' && !parse_type_params(type_params)) {
+        return false;
+    }
     skip_trivia();
     if (!expect_char(':', "':' after the key")) {
         return false;
@@ -135,8 +139,9 @@ bool OuterParser::parse_entry(Module& module)
         return !failed_;
     }
     if (looking_at_word("fn")) {
-        auto function = parse_function(*key, key_location, is_pub, nullptr);
+        auto function = parse_function(*key, key_location, is_pub, nullptr, false);
         if (function) {
+            function->type_params = std::move(type_params);
             module.functions.push_back(std::move(function));
             return true;
         }
@@ -145,20 +150,139 @@ bool OuterParser::parse_entry(Module& module)
     if (looking_at_word("struct") || looking_at_word("enum")) {
         auto decl = parse_type_decl(*key, key_location, is_pub, looking_at_word("enum"));
         if (decl) {
+            decl->type_params = std::move(type_params);
             module.types.push_back(std::move(decl));
             return true;
         }
         return false;
     }
-    for (const char* word : {"trait", "extend"}) {
-        if (looking_at_word(word)) {
-            error(location_, std::string("'") + word + "' is not supported yet");
+    if (looking_at_word("trait")) {
+        if (!type_params.empty()) {
+            error(type_params.front().location, "generic traits are not supported yet");
             return false;
         }
+        auto decl = parse_trait_decl(*key, key_location, is_pub);
+        if (decl) {
+            module.traits.push_back(std::move(decl));
+            return true;
+        }
+        return false;
     }
-    error(key_location, "'" + *key + "': only functions, structs, enums and 'use' are supported "
-                                     "at the top level for now");
+    if (looking_at_word("extend")) {
+        error(location_, "'extend' is not supported yet");
+        return false;
+    }
+    error(key_location, "'" + *key + "': only functions, structs, enums, traits and 'use' are "
+                                     "supported at the top level for now");
     return false;
+}
+
+// '<' param {',' param} '>' after a key, as in 'max<T: Ord + Clone, U>'.
+bool OuterParser::parse_type_params(std::vector<TypeParamDecl>& params)
+{
+    advance(); // '<'
+    for (;;) {
+        skip_trivia();
+        TypeParamDecl& param = params.emplace_back();
+        param.location = location_;
+        std::optional<std::string> name = read_identifier();
+        if (!name) {
+            error(location_, "expected a type parameter name, found " + describe_here());
+            return false;
+        }
+        param.name = std::move(*name);
+        skip_trivia();
+        if (peek() == ':' && !parse_bounds(param.bounds)) {
+            return false;
+        }
+        skip_trivia();
+        if (peek() != ',') {
+            break;
+        }
+        advance();
+    }
+    return expect_char('>', "'>' to close the type parameters");
+}
+
+// ':' Trait {'+' Trait}
+bool OuterParser::parse_bounds(std::vector<NameRef>& bounds)
+{
+    advance(); // ':'
+    for (;;) {
+        skip_trivia();
+        NameRef& bound = bounds.emplace_back();
+        bound.location = location_;
+        std::optional<std::string> name = read_identifier();
+        if (!name) {
+            error(location_, "expected a trait name, found " + describe_here());
+            return false;
+        }
+        bound.name = std::move(*name);
+        skip_trivia();
+        if (peek() != '+') {
+            return true;
+        }
+        advance();
+    }
+}
+
+// 'trait' '{' (name ':' fn signature) {',' ...} '}'. The methods have no
+// body; a type that says 'is: [Name]' defines them.
+std::unique_ptr<TraitDecl> OuterParser::parse_trait_decl(std::string name,
+                                                         const SourceLocation& location,
+                                                         bool is_pub)
+{
+    advance_by(5); // 'trait'
+    auto decl = std::make_unique<TraitDecl>();
+    decl->name = std::move(name);
+    decl->location = location;
+    decl->is_pub = is_pub;
+    skip_trivia();
+    if (!expect_char('{', "'{' and the methods of the trait")) {
+        return nullptr;
+    }
+    for (;;) {
+        skip_trivia();
+        if (peek() == '}') {
+            advance();
+            return decl;
+        }
+        if (at_end()) {
+            error(location_, "expected '}' to close the trait '" + decl->name + "'");
+            return nullptr;
+        }
+        SourceLocation key_location;
+        std::optional<std::string> key = parse_key(key_location);
+        if (!key) {
+            skip_rest_of_object();
+            return nullptr;
+        }
+        skip_trivia();
+        if (!expect_char(':', "':' after the method name")) {
+            skip_rest_of_object();
+            return nullptr;
+        }
+        skip_trivia();
+        if (!looking_at_word("fn")) {
+            error(location_, "a trait holds only methods, as in 'area: fn<f32(self)>'");
+            skip_rest_of_object();
+            return nullptr;
+        }
+        auto method = parse_function(std::move(*key), key_location, false, nullptr, true);
+        if (!method || failed_) {
+            skip_rest_of_object();
+            return nullptr;
+        }
+        decl->methods.push_back(std::move(method));
+        skip_trivia();
+        if (peek() == ',') {
+            advance();
+        } else if (peek() != '}') {
+            error(location_, "expected ',' between methods, found " + describe_here());
+            skip_rest_of_object();
+            return nullptr;
+        }
+    }
 }
 
 std::optional<std::string> OuterParser::parse_key(SourceLocation& location)
@@ -286,23 +410,67 @@ bool OuterParser::parse_type_member(TypeDecl& decl)
         error(key_location, "operator overloading ('" + *key + "') is not supported yet");
         return false;
     }
+    std::vector<TypeParamDecl> type_params;
+    if (peek() == '<' && !parse_type_params(type_params)) {
+        return false;
+    }
     skip_trivia();
     if (!expect_char(':', "':' after the member name")) {
         return false;
     }
     skip_trivia();
     if (looking_at_word("fn")) {
-        auto method = parse_function(std::move(*key), key_location, false, &decl);
+        auto method = parse_function(std::move(*key), key_location, false, &decl, false);
         if (!method) {
             return false;
         }
+        method->type_params = std::move(type_params);
         decl.methods.push_back(std::move(method));
         return true;
+    }
+    if (!type_params.empty()) {
+        error(type_params.front().location, "only functions and types take type parameters");
+        return false;
+    }
+    if (*key == "is" && !quoted) {
+        return parse_trait_list(decl.traits);
     }
     if (decl.is_enum) {
         return parse_case(decl, std::move(*key), key_location);
     }
     return parse_field(decl.fields, std::move(*key), key_location);
+}
+
+// '[' Trait {',' Trait} ']': the traits a type says it implements.
+bool OuterParser::parse_trait_list(std::vector<NameRef>& traits)
+{
+    if (peek() != '[') {
+        error(location_, "'is' takes an array of trait names, as in 'is: [Shape]'");
+        return false;
+    }
+    advance();
+    for (;;) {
+        skip_trivia();
+        if (peek() == ']') {
+            advance();
+            return true;
+        }
+        NameRef& trait = traits.emplace_back();
+        trait.location = location_;
+        std::optional<std::string> name = read_identifier();
+        if (!name) {
+            error(location_, "expected a trait name, found " + describe_here());
+            return false;
+        }
+        trait.name = std::move(*name);
+        skip_trivia();
+        if (peek() == ',') {
+            advance();
+        } else if (peek() != ']') {
+            error(location_, "expected ',' or ']' in 'is', found " + describe_here());
+            return false;
+        }
+    }
 }
 
 // 'Name: { field: Type, ... }' or 'Name: {}' for a case without data.
@@ -391,9 +559,10 @@ ExprPtr OuterParser::parse_field_default()
 // ---------------------------------------------------------------------------
 // Functions
 
+// A method declared by a trait ('in_trait') has a signature and no body.
 std::unique_ptr<FnDecl> OuterParser::parse_function(std::string name,
                                                     const SourceLocation& location, bool is_pub,
-                                                    TypeDecl* owner)
+                                                    TypeDecl* owner, bool in_trait)
 {
     advance_by(2); // 'fn'
     auto function = std::make_unique<FnDecl>();
@@ -409,18 +578,25 @@ std::unique_ptr<FnDecl> OuterParser::parse_function(std::string name,
         if (!parse_short_signature(signature)) {
             return nullptr;
         }
-        body = parse_body();
+        if (!in_trait || !at_value_end()) {
+            body = parse_body();
+        }
     } else if (peek() == '{') {
-        if (!parse_object_signature(signature, body)) {
+        if (!parse_object_signature(signature, body, in_trait)) {
             return nullptr;
         }
-    } else {
+    } else if (!in_trait) {
         body = parse_body();
     }
-    if (!body) {
+    if (in_trait && body) {
+        error(location, "a trait only declares '" + function->name +
+                            "'; the types that implement the trait define it");
         return nullptr;
     }
-    if (signature.self_convention && owner == nullptr) {
+    if (!body && !in_trait) {
+        return nullptr;
+    }
+    if (signature.self_convention && owner == nullptr && !in_trait) {
         error(signature.self_location, "'self' can only be used by a method inside a struct");
         return nullptr;
     }
@@ -428,8 +604,19 @@ std::unique_ptr<FnDecl> OuterParser::parse_function(std::string name,
     function->self_location = signature.self_location;
     function->params = std::move(signature.params);
     function->return_type = std::move(signature.return_type);
-    function->body = parse_code(*body, function->return_type.has_value() && !body->multiline);
+    function->has_body = body.has_value();
+    if (body) {
+        function->body = parse_code(*body, function->return_type.has_value() && !body->multiline);
+    }
     return function;
+}
+
+// True where a value ends: before ',', '}', a line break or a comment.
+bool OuterParser::at_value_end()
+{
+    skip_spaces_on_line();
+    return at_end() || peek() == ',' || peek() == '}' || peek() == '\n' || peek() == '\r' ||
+           looking_at("//") || looking_at("/*");
 }
 
 // '<' [return type] '(' params ')' '>'. The return type is a type name, or
@@ -467,7 +654,8 @@ bool OuterParser::parse_short_signature(Signature& signature)
 }
 
 // fn { in: { name: type, ... }, out: type, do: body }
-bool OuterParser::parse_object_signature(Signature& signature, std::optional<CodeRegion>& body)
+bool OuterParser::parse_object_signature(Signature& signature, std::optional<CodeRegion>& body,
+                                         bool body_optional)
 {
     advance(); // '{'
     for (;;) {
@@ -528,7 +716,7 @@ bool OuterParser::parse_object_signature(Signature& signature, std::optional<Cod
             advance();
         }
     }
-    if (!body) {
+    if (!body && !body_optional) {
         error(location_, "the function has no 'do' body");
         return false;
     }
@@ -634,7 +822,7 @@ std::optional<TypeExpr> OuterParser::parse_type()
     return type;
 }
 
-// A name, 'Option<T>', 'List<T>' or a tuple.
+// A name, a generic type 'Name<A, B>' or a tuple.
 std::optional<TypeExpr> OuterParser::parse_type_without_suffix()
 {
     const SourceLocation location = location_;
@@ -653,25 +841,26 @@ std::optional<TypeExpr> OuterParser::parse_type_without_suffix()
     if (peek() != '<') {
         return TypeExpr{std::move(*name), location};
     }
-    if (*name != "Option" && *name != "List") {
-        error(location_, "generic types other than 'Option' and 'List' are not supported yet");
-        return std::nullopt;
-    }
     advance(); // '<'
-    skip_trivia();
-    std::optional<TypeExpr> argument = parse_type();
-    if (!argument) {
-        return std::nullopt;
+    std::vector<TypeExpr> arguments;
+    for (;;) {
+        skip_trivia();
+        std::optional<TypeExpr> argument = parse_type();
+        if (!argument) {
+            return std::nullopt;
+        }
+        arguments.push_back(std::move(*argument));
+        skip_trivia();
+        if (peek() != ',') {
+            break;
+        }
+        advance();
     }
-    skip_trivia();
     const std::string close = "'>' to close '" + *name + "<...>'";
     if (!expect_char('>', close.c_str())) {
         return std::nullopt;
     }
-    TypeExpr generic;
-    make_generic_type_expr(*name, std::move(*argument), generic);
-    generic.location = location;
-    return generic;
+    return generic_type_expr(*name, std::move(arguments), location);
 }
 
 // '(' type ',' type {',' type} ')': a tuple of two or more elements.

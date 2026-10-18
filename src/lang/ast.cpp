@@ -64,17 +64,26 @@ TypeExpr list_type_expr(TypeExpr element)
     return list;
 }
 
-bool make_generic_type_expr(const std::string& name, TypeExpr argument, TypeExpr& out)
+TypeExpr generic_type_expr(const std::string& name, std::vector<TypeExpr> arguments,
+                           const SourceLocation& location)
 {
-    if (name == "Option") {
-        out = option_type_expr(std::move(argument));
-        return true;
+    TypeExpr type;
+    if (arguments.size() == 1 && (name == "Option" || name == "List")) {
+        type = name == "Option" ? option_type_expr(std::move(arguments.front()))
+                                : list_type_expr(std::move(arguments.front()));
+        type.location = location;
+        return type;
     }
-    if (name == "List") {
-        out = list_type_expr(std::move(argument));
-        return true;
+    type.name = name + "<";
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
+        type.name += (i == 0 ? "" : ", ") + arguments[i].name;
     }
-    return false;
+    type.name += ">";
+    type.location = location;
+    type.has_arguments = true;
+    type.generic_name = name;
+    type.elements = std::move(arguments);
+    return type;
 }
 
 std::string tuple_type_text(const std::vector<std::string>& element_names)
@@ -131,10 +140,34 @@ std::string escape(const std::string& text)
     return out;
 }
 
+// '<T: Ord + Clone, U>'
+std::string type_params_text(const std::vector<TypeParamDecl>& params)
+{
+    if (params.empty()) {
+        return "";
+    }
+    std::string text = "<";
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        text += (i == 0 ? "" : ", ") + params[i].name;
+        for (std::size_t j = 0; j < params[i].bounds.size(); ++j) {
+            text += (j == 0 ? ": " : " + ") + params[i].bounds[j].name;
+        }
+    }
+    return text + ">";
+}
+
 class AstDumper {
 public:
     std::string dump(const Module& module)
     {
+        for (const auto& decl : module.traits) {
+            line(std::string(decl->is_pub ? "pub " : "") + "trait " + decl->name);
+            ++depth_;
+            for (const auto& method : decl->methods) {
+                dump_function(*method);
+            }
+            --depth_;
+        }
         for (const auto& decl : module.types) {
             dump_type_decl(*decl);
         }
@@ -170,9 +203,13 @@ private:
     {
         std::string header = std::string(decl.is_pub ? "pub " : "") +
                              (decl.is_enum ? "enum " : "struct ") +
-                             (decl.is_copy ? "copy " : "") + decl.name;
+                             (decl.is_copy ? "copy " : "") + decl.name +
+                             type_params_text(decl.type_params);
         line(header);
         ++depth_;
+        for (const NameRef& trait : decl.traits) {
+            line("is " + trait.name);
+        }
         dump_fields(decl.fields);
         for (const CaseDecl& entry : decl.cases) {
             line("case " + entry.name);
@@ -198,7 +235,8 @@ private:
 
     void dump_function(const FnDecl& function)
     {
-        std::string header = std::string(function.is_pub ? "pub " : "") + "fn " + function.name;
+        std::string header = std::string(function.is_pub ? "pub " : "") + "fn " + function.name +
+                             type_params_text(function.type_params);
         if (function.return_type) {
             header += " -> " + function.return_type->name;
         }
@@ -211,7 +249,9 @@ private:
             line(std::string("param ") + param_convention_spelling(param.convention) + " " +
                  param.name + ": " + param.type.name);
         }
-        dump_block(function.body);
+        if (function.has_body) {
+            dump_block(function.body);
+        }
         --depth_;
     }
 

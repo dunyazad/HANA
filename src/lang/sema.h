@@ -62,6 +62,14 @@ private:
         InoutLoop,     // 'for inout x in xs'
     };
 
+    // Instances of generic types and functions, made once per list of type
+    // arguments.
+    using TypeMap = std::unordered_map<const Type*, const Type*>;
+    struct PendingDefault {
+        UserType* instance;
+        FieldInfo* field;
+    };
+
     // Declarations
     void declare_intrinsics();
     void declare_type(TypeDecl& decl);
@@ -77,7 +85,8 @@ private:
     void check_copy_type(const TypeDecl& decl);
     void check_field_defaults(TypeDecl& decl);
     void check_defaults(std::vector<FieldDecl>& decls, const std::vector<FieldInfo>& fields);
-    FunctionSymbol& create_function_symbol(FnDecl& function, std::string name);
+    FunctionSymbol& create_function_symbol(FnDecl& function, std::string name, bool attach = true,
+                                           const std::vector<const Type*>* own_params = nullptr);
     void declare_function(FnDecl& function);
     void declare_method(TypeDecl& decl, FnDecl& method);
     void check_drop_method(const TypeDecl& decl, const FnDecl& method,
@@ -119,6 +128,53 @@ private:
     const Type* check_some_call(CallExpr& call, const Type* expected);
     const Type* check_option_comparison(BinaryExpr& binary);
     void check_option_case_pattern(Pattern& pattern, const Type* subject);
+
+    // Generics and traits (sema_generic.cpp)
+    void declare_builtin_traits();
+    void declare_trait(TraitDecl& decl);
+    void declare_trait_methods(TraitDecl& decl);
+    std::vector<const TraitInfo*> resolve_bounds(const std::vector<NameRef>& names);
+    std::vector<const TraitInfo*> resolve_declared_traits(const TypeDecl& decl);
+    static std::string signature_text(const FunctionSymbol& function);
+    void check_trait_conformance(const TypeDecl& decl);
+    const FunctionSymbol* find_trait_method(MemberExpr& callee, const Type* receiver);
+    std::vector<const Type*> declare_type_params(const std::vector<TypeParamDecl>& decls);
+    void push_type_names(const std::vector<TypeParamDecl>& decls,
+                         const std::vector<const Type*>& types);
+    void push_type_bindings(const std::vector<std::pair<std::string, const Type*>>& bindings);
+    const Type* lookup_type_name(const std::string& name) const;
+    int push_function_type_names(const FnDecl& function);
+    void pop_type_names(int count);
+    const Type* resolve_generic_type(const TypeExpr& type);
+    bool check_bounds(const std::vector<const Type*>& params, const std::vector<const Type*>& args,
+                      const std::string& what, const SourceLocation& location);
+    const Type* instantiate(const UserType& generic, const std::vector<const Type*>& args);
+    void copy_instance_defaults(UserType& instance);
+    void declare_instance_methods(UserType& instance);
+    void declare_instance_method(UserType& instance, FnDecl& method, bool concrete);
+    void declare_waiting_instance_methods();
+    const Type* substitute(const Type* type, const TypeMap& map);
+    static void unify_params(const Type* pattern, const Type* actual,
+                             const std::vector<const Type*>& params, TypeMap& map);
+    static bool mentions(const Type* type, const std::vector<const Type*>& params,
+                         const TypeMap& map);
+    bool infer_call_types(CallExpr& call, const FunctionSymbol& function,
+                          const std::vector<const Type*>& params, TypeMap& map,
+                          const Type* expected, const std::string& what);
+    FunctionSymbol substituted_signature(const FunctionSymbol& function, const TypeMap& map);
+    const FunctionSymbol* instance_function(const FunctionSymbol& generic,
+                                            const std::vector<const Type*>& args,
+                                            const SourceLocation& location);
+    void check_pending_instances();
+    const Type* check_generic_function_call(CallExpr& call, NameExpr& callee,
+                                            const FunctionSymbol& function, const Type* expected);
+    const Type* check_generic_method_call(CallExpr& call, MemberExpr& callee,
+                                          const FunctionSymbol& method,
+                                          const std::vector<const Type*>& params, TypeMap map,
+                                          const std::optional<Place>& receiver,
+                                          const Type* expected);
+    const UserType* infer_literal_type(StructLiteralExpr& lit, const UserType& generic,
+                                       const Type* expected);
 
     // Lists (sema_list.cpp)
     const Type* list_type(const Type* element);
@@ -165,17 +221,18 @@ private:
     const Type* check_binary(BinaryExpr& binary, const Type* expected);
     const Type* check_binary_operands(BinaryExpr& binary, const Type* expected);
     const Type* binary_result_type(BinaryOp op, const Type* operand, const SourceLocation& location);
-    const Type* check_struct_literal(StructLiteralExpr& lit);
-    const std::vector<FieldInfo>* literal_fields(StructLiteralExpr& lit);
+    const Type* check_struct_literal(StructLiteralExpr& lit, const Type* expected);
+    const std::vector<FieldInfo>* literal_fields(StructLiteralExpr& lit, const UserType& type);
     void report_missing_fields(const StructLiteralExpr& lit, const std::vector<FieldInfo>& fields,
                                const std::string& written);
     static std::string type_name_hint(const UserType& info);
-    const Type* check_member(MemberExpr& member);
-    const Type* check_static_member(MemberExpr& member, const UserType& info);
+    const Type* check_member(MemberExpr& member, const Type* expected);
+    const Type* check_static_member(MemberExpr& member, const UserType& generic,
+                                    const Type* expected);
     const UserType* static_type_name(const Expr& object) const;
     const Type* check_call(CallExpr& call, const Type* expected);
     const Type* check_function_call(CallExpr& call, NameExpr& callee, const Type* expected);
-    const Type* check_method_call(CallExpr& call, MemberExpr& callee);
+    const Type* check_method_call(CallExpr& call, MemberExpr& callee, const Type* expected);
     const FunctionSymbol* find_static_function(MemberExpr& callee, const UserType& info);
     const FunctionSymbol* find_method(MemberExpr& callee, const Type* receiver);
     static BuiltinMethod builtin_method(const Type* receiver, const std::string& name);
@@ -217,6 +274,17 @@ private:
     std::map<std::vector<const Type*>, const Type*> tuple_types_;
     std::unordered_map<const Type*, const Type*> option_types_;
     std::unordered_map<const Type*, const Type*> list_types_;
+    std::unordered_map<std::string, const TraitInfo*> traits_;
+    std::vector<std::unordered_map<std::string, const Type*>> type_scopes_;
+    std::map<std::pair<const UserType*, std::vector<const Type*>>, const Type*> type_instances_;
+    std::map<std::pair<const FunctionSymbol*, std::vector<const Type*>>, const FunctionSymbol*>
+        function_instances_;
+    std::deque<FnDecl*> pending_bodies_;
+    // Instances made before the methods of generic types were declared get
+    // their methods once those are.
+    bool methods_declared_ = false;
+    std::vector<UserType*> waiting_for_methods_;
+    std::deque<PendingDefault> pending_defaults_;
     std::vector<std::unordered_map<std::string, const VarSymbol*>> scopes_;
     std::vector<LoopContext> loops_;
     const Type* return_type_ = nullptr;

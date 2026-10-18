@@ -69,9 +69,79 @@ int UserType::find_case(std::string_view case_name) const
     return -1;
 }
 
+bool has_bound(const Type* param, BuiltinTrait trait)
+{
+    if (!param->is_param()) {
+        return false;
+    }
+    for (const TraitInfo* bound : param->param->bounds) {
+        // 'Ord' includes 'Eq', and a Copy value is its own clone.
+        if (bound->builtin == trait || (trait == BuiltinTrait::Eq && bound->builtin == BuiltinTrait::Ord) ||
+            (trait == BuiltinTrait::Clone && bound->builtin == BuiltinTrait::Copy)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool implements(const Type* type, const TraitInfo& trait)
+{
+    if (type->is_error()) {
+        return true;
+    }
+    switch (trait.builtin) {
+    case BuiltinTrait::Copy: return is_copy_type(type);
+    case BuiltinTrait::Clone: return is_clonable(type);
+    case BuiltinTrait::Eq:
+        return type->is_numeric() || type->kind == TypeKind::Bool || type->kind == TypeKind::Char ||
+               type->kind == TypeKind::Str || has_bound(type, BuiltinTrait::Eq);
+    case BuiltinTrait::Ord:
+        return type->is_numeric() || type->kind == TypeKind::Char || type->kind == TypeKind::Str ||
+               has_bound(type, BuiltinTrait::Ord);
+    case BuiltinTrait::None: break;
+    }
+    if (type->is_param()) {
+        for (const TraitInfo* bound : type->param->bounds) {
+            if (bound == &trait) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if (type->is_user()) {
+        for (const TraitInfo* declared : type->user->origin().traits) {
+            if (declared == &trait) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool is_concrete(const Type* type)
+{
+    if (type->is_param() || type->is_literal_var) {
+        return false;
+    }
+    for (const Type* element : type->elements) {
+        if (!is_concrete(element)) {
+            return false;
+        }
+    }
+    if (type->is_user()) {
+        for (const Type* argument : type->user->arguments()) {
+            if (!is_concrete(argument)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool is_copy_type(const Type* type)
 {
     switch (type->kind) {
+    case TypeKind::Param: return has_bound(type, BuiltinTrait::Copy);
     case TypeKind::Str:
     case TypeKind::List: return false;
     case TypeKind::Struct:
@@ -91,6 +161,7 @@ bool is_copy_type(const Type* type)
 bool needs_drop(const Type* type)
 {
     switch (type->kind) {
+    case TypeKind::Param: return !has_bound(type, BuiltinTrait::Copy);
     case TypeKind::Str:
     case TypeKind::List: return true;
     case TypeKind::Struct:
@@ -134,6 +205,9 @@ bool is_clonable_in(const Type* type, std::vector<const Type*>& checking)
 {
     if (is_copy_type(type) || type->kind == TypeKind::Str) {
         return true;
+    }
+    if (type->is_param()) {
+        return has_bound(type, BuiltinTrait::Clone);
     }
     for (const Type* outer : checking) {
         if (outer == type) {

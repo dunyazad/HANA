@@ -1,0 +1,41 @@
+{
+  Shape: trait {
+    area: fn<f64(self)>,
+    name: fn<str(self)>,
+  },
+  Pair<T>: struct {
+    first: T,
+    second: T,
+    take_first: fn<T(sink self)> self.first,
+  },
+  Circle: struct {
+    is: [Shape],
+    radius: f64,
+    area: fn<f64(self)> 3.0 * self.radius * self.radius,
+    name: fn<str(self)> "circle",
+  },
+  Square: struct {
+    is: [Shape],
+    side: f64,
+    area: fn<f64(self)> self.side * self.side,
+    name: fn<str(self)> f"square {self.side}",
+  },
+  max<T: Ord>: fn<T(sink a: T, sink b: T)> a if a > b else b,
+  smaller<T: Ord + Copy>: fn<T(a: T, b: T)> a if a < b else b,
+  describe<S: Shape>: fn<str(s: S)> f"{s.name()} has area {s.area()}",
+  first_of<T: Clone>: fn<T(xs: List<T>)> xs[0].clone(),
+  main: fn '''
+    print(max(3, 7))
+    print(max("abc", "abd"))
+    print(max(2.5, 1.5))
+    let p = Pair { first: 1, second: 2 }
+    print(f"{p.first} {p.second}")
+    let q = Pair { first: "x", second: "y" }
+    print(q.take_first())
+    print(smaller(4, 3))
+    print(describe(Circle { radius: 1.0 }))
+    print(describe(Square { side: 2.0 }))
+    print(first_of(["a", "b"]))
+    print(first_of([5, 6]))
+  ''',
+}

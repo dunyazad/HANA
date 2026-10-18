@@ -1,0 +1,20 @@
+{
+  dup<T>: fn<(sink x: T)> '''
+    let a = x
+    let b = x
+  ''',
+  dup_copy<T: Copy>: fn<(sink x: T)> '''
+    let a = x
+    let b = x
+  ''',
+  keep<T>: fn<T(x: T)> x,
+  put<T>: fn<(inout xs: List<T>, sink x: T)> xs.push(x),
+  loop<T>: fn<(inout xs: List<T>, sink x: T)> '''
+    for y in xs:
+      xs.push(x)
+  ''',
+  main: fn '''
+    var xs: List<str> = []
+    put(&xs, "a")
+  ''',
+}

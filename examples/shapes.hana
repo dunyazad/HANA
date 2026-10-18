@@ -1,0 +1,47 @@
+{
+  Shape: trait {
+    area: fn<f64(self)>,
+    name: fn<str(self)>,
+  },
+
+  Circle: struct {
+    is: [Shape],
+    radius: f64,
+
+    area: fn<f64(self)> 3.14159 * self.radius * self.radius,
+    name: fn<str(self)> "circle",
+  },
+
+  Rect: struct {
+    is: [Shape],
+    width: f64,
+    height: f64,
+
+    area: fn<f64(self)> self.width * self.height,
+    name: fn<str(self)> "rect",
+  },
+
+  total_area<S: Shape>: fn<f64(shapes: List<S>)> '''
+    var total = 0.0
+    for shape in shapes:
+      total += shape.area()
+    return total
+  ''',
+
+  largest<T: Ord + Clone>: fn<T(items: List<T>)> '''
+    var best = items[0].clone()
+    for item in items:
+      if item > best:
+        best = item.clone()
+    return best
+  ''',
+
+  main: fn '''
+    let circles = [Circle { radius: 1.0 }, Circle { radius: 2.0 }]
+    let rects = [Rect { width: 2.0, height: 3.0 }]
+    print(f"circles: {total_area(circles)}")
+    print(f"rects: {total_area(rects)}")
+    print(largest([3, 41, 7]))
+    print(largest(["kiwi", "apple", "pear"]))
+  ''',
+}

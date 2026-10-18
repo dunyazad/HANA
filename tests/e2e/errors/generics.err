@@ -1,0 +1,16 @@
+12:17: error: unknown trait 'Nope'
+11:3: error: 'Clone' is built in: a type has it when the language says so, so it is not listed in 'is'
+9:5: error: 'area' does not match the trait 'Shape': it must be 'fn<f64(self)>'
+6:3: error: 'Circle' says it is 'Shape', but has no method 'scale'
+4:5: note: 'scale' is declared here as 'fn<(inout self, f64)>'
+18:35: error: operator '==' needs 'Eq'; write 'T: Eq'
+19:39: error: operator '<' needs 'Ord'; write 'T: Ord'
+20:29: error: a value of type 'T' cannot be printed; it is a type parameter
+21:30: error: 'T' has no method 'area'; give 'T' a trait that has it, as in 'T: Shape'
+22:28: error: 'clone' needs 'Clone'; write 'T: Clone'
+23:41: error: operator '+' cannot be applied to 'T'
+27:12: error: 'Box' is generic; write its type arguments, as in 'Box<i32>'
+28:12: error: 'Sorted' needs 'T: Ord', but 'P' is not 'Ord'
+29:17: error: cannot tell what 'T' is in this call to 'make'; give the arguments or the result a type
+30:13: error: cannot tell what 'T' is in this 'Box' value; write its type, as in 'let v: Box<i32> = ...'
+31:16: error: expected 'str', found 'i32'

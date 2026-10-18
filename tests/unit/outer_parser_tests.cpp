@@ -1,4 +1,5 @@
 #include "helpers.h"
+#include "lang/ast_clone.h"
 #include "test.h"
 
 using namespace hana::test;
@@ -98,13 +99,42 @@ TEST(outer_unsupported_entries_and_recovery)
 {
     auto r = parse(R"({
   max_hp: 100,
-  Shape: trait { area: fn<f32(self)> },
+  Grow: extend { },
   ok: fn pass,
 })");
     EXPECT(r->error_count() == 2);
     EXPECT(r->has_error("'max_hp': only functions"));
-    EXPECT(r->has_error("'trait' is not supported yet"));
+    EXPECT(r->has_error("'extend' is not supported yet"));
     EXPECT(r->module->functions.size() == 1);
+}
+
+TEST(outer_generics_and_traits)
+{
+    auto r = parse(R"({
+  Shape: trait {
+    area: fn<f32(self)>,
+    grow: fn { in: { inout self, by: f32 } },
+  },
+  Pair<T, U: Ord + Clone>: struct {
+    is: [Shape],
+    first: T,
+    map<V>: fn<Pair<V, U>(sink self)> pass,
+  },
+  max<T: Ord>: fn<T(sink a: T, sink b: T)> a,
+})");
+    EXPECT(!r->diagnostics.has_errors());
+    const TraitDecl& shape = *r->module->traits[0];
+    EXPECT(shape.methods.size() == 2 && !shape.methods[0]->has_body && !shape.methods[1]->has_body);
+    const TypeDecl& pair = *r->module->types[0];
+    EXPECT(pair.type_params.size() == 2 && pair.type_params[1].bounds.size() == 2);
+    EXPECT(pair.traits.size() == 1 && pair.traits[0].name == "Shape");
+    EXPECT(pair.methods[0]->type_params.size() == 1);
+    EXPECT(pair.methods[0]->return_type->has_arguments &&
+           pair.methods[0]->return_type->generic_name == "Pair" &&
+           pair.methods[0]->return_type->elements.size() == 2);
+    EXPECT(r->module->functions[0]->type_params[0].bounds[0].name == "Ord");
+    EXPECT(parse("{ T: trait { f: fn<(self)> pass } }")->has_error("a trait only declares 'f'"));
+    EXPECT(parse("{ f<T: >: fn pass }")->has_error("expected a trait name"));
 }
 
 TEST(outer_use_is_parsed)
@@ -228,10 +258,54 @@ TEST(outer_option_types)
     const FnDecl& f = *r->module->functions[0];
     EXPECT(f.return_type->name == "Option<i32>");
     EXPECT(f.params[0].type.name == "Option<Option<i32>>");
-    EXPECT(parse("{ f: fn<(x: Map<i32>)> pass }")->has_error("other than 'Option' and 'List'"));
+    auto map = parse("{ f: fn<(x: Map<str, i32>)> pass }");
+    EXPECT(!map->diagnostics.has_errors());
+    EXPECT(map->module->functions[0]->params[0].type.has_arguments &&
+           map->module->functions[0]->params[0].type.name == "Map<str, i32>");
     auto lists = parse("{ f: fn<List<List<i32>>(x: List<str?>)> pass }");
     EXPECT(!lists->diagnostics.has_errors());
     const FnDecl& g = *lists->module->functions[0];
     EXPECT(g.return_type->is_list && g.return_type->name == "List<List<i32>>");
     EXPECT(g.params[0].type.is_list && g.params[0].type.elements[0].is_option);
+}
+
+TEST(ast_clone_copies_every_node)
+{
+    auto r = parse(R"({
+  P: struct {
+    x: i32 = 1,
+    f<T>: fn<T(sink self, sink t: T)> t,
+  },
+  g: fn<i32(inout a: List<i32>, b: str?)> '''
+    let (q, _) = (1, f"x{a[0] + 1}")
+    var s = P { x: -q }
+    s.x += a.len() as i32
+    for inout v in a:
+      v = v * 2 if v > 0 else 0
+    for i in 0..=3:
+      if i == 2:
+        break
+      elif i == 1:
+        continue
+    while not (s.x < 10 and true):
+      s.x -= 1
+    match b:
+      Some(text) if text.len() > 0: print(text)
+      null: pass
+    let m = match s.x:
+      1..=9: 'a'
+      _: 'b'
+    return [s.x, 2][0]
+  ''',
+})");
+    EXPECT(!r->diagnostics.has_errors());
+    Module copy;
+    for (const auto& function : r->module->functions) {
+        copy.functions.push_back(clone_function(*function));
+    }
+    Module original;
+    original.functions = std::move(r->module->functions);
+    EXPECT(dump_module(copy) == dump_module(original));
+    const FnDecl& method = *r->module->types[0]->methods[0];
+    EXPECT(clone_function(method)->type_params.size() == 1);
 }
