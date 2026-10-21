@@ -219,7 +219,8 @@ void CodeGenerator::emit_pattern_test(const Pattern& pattern, llvm::Value* addre
 {
     switch (pattern.kind) {
     case PatternKind::Wildcard:
-    case PatternKind::Binding: return;
+    case PatternKind::Binding:
+    case PatternKind::Struct: return; // a struct pattern is only in 'let', where it always matches
     case PatternKind::Literal: {
         llvm::Value* value = builder_.CreateLoad(llvm_type(type), address);
         continue_if(builder_.CreateICmpEQ(value, pattern_constant(*pattern.value, type)), fail);
@@ -291,6 +292,14 @@ void CodeGenerator::emit_pattern_bindings(const Pattern& pattern, llvm::Value* a
         for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
             emit_pattern_bindings(*pattern.arguments[i], tuple_element_address(type, address, i),
                                   type->elements[i]);
+        }
+        return;
+    }
+    if (pattern.kind == PatternKind::Struct) {
+        for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+            const auto field = static_cast<std::size_t>(pattern.field_indices[i]);
+            emit_pattern_bindings(*pattern.arguments[i], tuple_element_address(type, address, field),
+                                  type->user->fields[field].type);
         }
         return;
     }

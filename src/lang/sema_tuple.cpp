@@ -125,10 +125,12 @@ void Sema::check_destructuring_let(LetStmt& let)
     declare_let_pattern(*let.pattern, type, let.is_mutable);
 }
 
-// A 'let' pattern must match every value: names, '_' and tuples of them.
+// A 'let' pattern must match every value: names, '_', and tuples and
+// structs of them.
 void Sema::declare_let_pattern(Pattern& pattern, const Type* type, bool is_mutable)
 {
     switch (pattern.kind) {
+    case PatternKind::Struct: declare_struct_pattern(pattern, type, is_mutable); return;
     case PatternKind::Wildcard: return;
     case PatternKind::Binding:
         pattern.symbol = declare_var(pattern.name, type, VarKind::Local, is_mutable, pattern.location);
@@ -160,6 +162,64 @@ void Sema::declare_let_pattern(Pattern& pattern, const Type* type, bool is_mutab
                                               "'match' to test values");
         return;
     }
+}
+
+// 'let Pair { first, second: s } = p': the value moves, and each name owns
+// its field; fields not written are dropped. A struct with 'drop' cannot be
+// taken apart, since its drop needs the whole value.
+void Sema::declare_struct_pattern(Pattern& pattern, const Type* type, bool is_mutable)
+{
+    const UserType* info = struct_pattern_type(pattern, type);
+    pattern.field_indices.assign(pattern.arguments.size(), -1);
+    for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+        const Type* field_type = error_type();
+        if (info != nullptr) {
+            const std::string& name = pattern.field_names[i];
+            const int index = info->find_field(name);
+            bool repeated = false;
+            for (std::size_t j = 0; j < i; ++j) {
+                repeated = repeated || pattern.field_names[j] == name;
+            }
+            if (index < 0) {
+                diagnostics_->error(pattern.field_locations[i], "'" + info->origin().decl->name +
+                                                                    "' has no field '" + name + "'");
+            } else if (repeated) {
+                diagnostics_->error(pattern.field_locations[i],
+                                   "field '" + name + "' is written twice in the pattern");
+            } else {
+                pattern.field_indices[i] = index;
+                field_type = info->fields[static_cast<std::size_t>(index)].type;
+            }
+        }
+        declare_let_pattern(*pattern.arguments[i], field_type, is_mutable);
+    }
+}
+
+// The struct a struct pattern takes apart, or null after an error. The
+// pattern names the struct without type arguments ('Pair' for 'Pair<i32>').
+const UserType* Sema::struct_pattern_type(const Pattern& pattern, const Type* type)
+{
+    if (type->is_error()) {
+        return nullptr;
+    }
+    if (type->is_enum() && type->user->origin().decl != nullptr &&
+        type->user->origin().decl->name == pattern.name) {
+        diagnostics_->error(pattern.location, "'" + pattern.name + "' is an enum; take its cases "
+                                                                   "apart with 'match'");
+        return nullptr;
+    }
+    if (!type->is_struct() || type->user->origin().decl == nullptr ||
+        type->user->origin().decl->name != pattern.name) {
+        diagnostics_->error(pattern.location, "the pattern takes apart a '" + pattern.name +
+                                                  "', but the value has type " + quoted(type));
+        return nullptr;
+    }
+    if (type->user->drop_method != nullptr) {
+        diagnostics_->error(pattern.location, quoted(type) + " has 'drop', so it cannot be taken "
+                                                             "apart; its drop needs the whole value");
+        return nullptr;
+    }
+    return type->user;
 }
 
 // '(p, q)' in 'match': one pattern per element.

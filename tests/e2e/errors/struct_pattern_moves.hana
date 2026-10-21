@@ -1,0 +1,10 @@
+{
+  P: struct { a: str, b: str },
+  main: fn '''
+    let p = P { a: "a", b: "b" }
+    let P { a, b } = p
+    print(p.a)
+    let P { a: x } = P { a: a, b: b }
+    print(b)
+  ''',
+}

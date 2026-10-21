@@ -198,6 +198,8 @@ private:
     const Type* check_tuple_member(MemberExpr& member, const Type& tuple);
     void check_destructuring_let(LetStmt& let);
     void declare_let_pattern(Pattern& pattern, const Type* type, bool is_mutable);
+    void declare_struct_pattern(Pattern& pattern, const Type* type, bool is_mutable);
+    const UserType* struct_pattern_type(const Pattern& pattern, const Type* type);
     void check_tuple_pattern(Pattern& pattern, const Type* subject);
 
     // match (sema_match.cpp)

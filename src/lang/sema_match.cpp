@@ -160,6 +160,11 @@ void Sema::check_pattern(Pattern& pattern, const Type* subject)
         }
         return;
     case PatternKind::Tuple: check_tuple_pattern(pattern, subject); return;
+    case PatternKind::Struct:
+        diagnostics_->error(pattern.location, "struct patterns in 'match' are not supported yet; "
+                                              "take the struct apart with 'let " +
+                                                  pattern.name + " { ... } = value'");
+        return;
     }
 }
 

@@ -1,0 +1,19 @@
+{
+  Point: struct { x: i32, y: i32 },
+  Locked: struct {
+    name: str,
+    drop: fn<(inout self)> pass,
+  },
+  Shape: enum { Dot: {} },
+  main: fn '''
+    let p = Point { x: 1, y: 2 }
+    let Point { x, z } = p
+    let Point { x: a, x: b } = Point { x: 1, y: 2 }
+    let Pair { first } = p
+    let Locked { name } = Locked { name: "n" }
+    let Shape { x: c } = Shape.Dot
+    let Point { x: 0, y: d } = p
+    match p:
+      Point { x, y }: pass
+  ''',
+}

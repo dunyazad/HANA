@@ -1,0 +1,38 @@
+{
+  Noisy: struct {
+    name: str,
+    drop: fn<(inout self)> print(f"drop {self.name}"),
+  },
+  Pair<T>: struct {
+    first: T,
+    second: T,
+  },
+  Person: struct {
+    name: str,
+    pet: Noisy,
+    age: i32,
+    tags: (str, str),
+  },
+  swap<T>: fn<Pair<T>(sink p: Pair<T>)> '''
+    let Pair { first, second } = p
+    return Pair { first: second, second: first }
+  ''',
+  make: fn<Noisy(sink name: str)> Noisy { name: name },
+  main: fn '''
+    let p = swap(Pair { first: "a", second: "b" })
+    print(f"{p.first} {p.second}")
+    print("-- rename and skip")
+    let person = Person { name: "kim", pet: make("dog"), age: 30, tags: ("x", "y") }
+    let Person { name: who, tags: (t1, _), age } = person
+    print(f"{who} {age} {t1}")
+    print("-- nested")
+    let q = Pair { first: Pair { first: make("a1"), second: make("a2") }, second: Pair { first: make("b1"), second: make("b2") } }
+    let Pair { first: Pair { first: keep, second: _ }, second } = q
+    print(f"kept {keep.name} {second.first.name}")
+    print("-- var")
+    var Pair { first: x, second: y } = Pair { first: 1, second: 2 }
+    x += y
+    print(x)
+    print("-- end")
+  ''',
+}

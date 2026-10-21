@@ -47,6 +47,7 @@ private:
     bool parse_match_arm(MatchExpr& match_expr, bool is_expression);
     PatternPtr parse_pattern();
     PatternPtr parse_tuple_pattern();
+    PatternPtr parse_struct_pattern(PatternPtr pattern);
     ExprPtr parse_pattern_literal();
 
     // Expressions, lowest precedence first

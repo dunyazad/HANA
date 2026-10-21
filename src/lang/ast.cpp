@@ -458,6 +458,17 @@ private:
             }
             --depth_;
             break;
+        case PatternKind::Struct:
+            line("pattern struct " + pattern.name);
+            ++depth_;
+            for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+                line("field " + pattern.field_names[i]);
+                ++depth_;
+                dump_pattern(*pattern.arguments[i]);
+                --depth_;
+            }
+            --depth_;
+            break;
         }
     }
 

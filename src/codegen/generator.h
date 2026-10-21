@@ -230,6 +230,7 @@ private:
     void drop_except(llvm::Value* address, const Type* type, const std::vector<PathStep>& path,
                      std::size_t from);
     void drop_unbound(const Pattern& pattern, llvm::Value* address, const Type* type);
+    void drop_unbound_fields(const Pattern& pattern, llvm::Value* address, const Type* type);
     static bool binds_owned_value(const Pattern& pattern, const Type* type);
     void emit_drop(llvm::Value* address, const Type* type);
     llvm::Value* emit_clone(llvm::Value* address, const Type* type);

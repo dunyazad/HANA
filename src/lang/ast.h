@@ -376,6 +376,7 @@ enum class PatternKind {
     Case,     // an enum case: Circle(r), Empty
     Tuple,    // (a, _, 0): one pattern per element, in 'arguments'
     Null,     // null: an Option without a value
+    Struct,   // Pair { first, second: s }: one pattern per named field
 };
 
 struct Pattern;
@@ -390,9 +391,13 @@ struct Pattern {
     bool inclusive = false;    // '..=' rather than '..'
     bool has_arguments = false; // Case written with '(...)'
     std::vector<PatternPtr> arguments; // Case: one per field; Tuple: one per element
+    // Struct: the field each argument matches, as written.
+    std::vector<std::string> field_names;
+    std::vector<SourceLocation> field_locations;
     // Set by semantic analysis.
     const VarSymbol* symbol = nullptr; // Binding
     int case_index = -1;               // Case
+    std::vector<int> field_indices;    // Struct: the index of each field
 };
 
 // ---------------------------------------------------------------------------

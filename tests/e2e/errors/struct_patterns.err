@@ -1,0 +1,7 @@
+10:20: error: 'Point' has no field 'z'
+11:23: error: field 'x' is written twice in the pattern
+12:9: error: the pattern takes apart a 'Pair', but the value has type 'Point'
+13:9: error: 'Locked' has 'drop', so it cannot be taken apart; its drop needs the whole value
+14:9: error: 'Shape' is an enum; take its cases apart with 'match'
+15:20: error: a 'let' pattern must match every value; use 'match' to test values
+17:7: error: struct patterns in 'match' are not supported yet; take the struct apart with 'let Point { ... } = value'

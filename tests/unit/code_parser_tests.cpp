@@ -244,3 +244,17 @@ TEST(code_parser_option_types_and_patterns)
     EXPECT(match.arms[0].pattern->arguments[0]->kind == PatternKind::Null);
     EXPECT(match.arms[1].pattern->kind == PatternKind::Null);
 }
+
+TEST(code_parser_struct_patterns)
+{
+    auto r = parse_main("    let P { a, b: (c, _), d: Q { e } } = v\n");
+    EXPECT(!r->diagnostics.has_errors());
+    const auto& let = static_cast<const LetStmt&>(*main_body(*r).statements[0]);
+    EXPECT(let.pattern && let.pattern->kind == PatternKind::Struct && let.pattern->name == "P");
+    EXPECT(let.pattern->field_names.size() == 3 && let.pattern->field_names[1] == "b");
+    EXPECT(let.pattern->arguments[0]->kind == PatternKind::Binding &&
+           let.pattern->arguments[0]->name == "a");
+    EXPECT(let.pattern->arguments[1]->kind == PatternKind::Tuple);
+    EXPECT(let.pattern->arguments[2]->kind == PatternKind::Struct);
+    EXPECT(parse_main("    let P { 1 } = v\n")->has_error("expected a field name"));
+}

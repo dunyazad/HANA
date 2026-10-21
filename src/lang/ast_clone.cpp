@@ -175,6 +175,8 @@ PatternPtr clone_pattern(const Pattern& pattern)
     copy->end = clone_optional(pattern.end);
     copy->inclusive = pattern.inclusive;
     copy->has_arguments = pattern.has_arguments;
+    copy->field_names = pattern.field_names;
+    copy->field_locations = pattern.field_locations;
     for (const auto& argument : pattern.arguments) {
         copy->arguments.push_back(clone_pattern(*argument));
     }

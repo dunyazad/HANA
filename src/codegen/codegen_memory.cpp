@@ -296,6 +296,7 @@ void CodeGenerator::drop_unbound(const Pattern& pattern, llvm::Value* address, c
                          type->elements[i]);
         }
         return;
+    case PatternKind::Struct: drop_unbound_fields(pattern, address, type); return;
     case PatternKind::Case:
         if (type->is_option()) {
             drop_unbound(*pattern.arguments.front(), option_value_address(type, address),
@@ -312,11 +313,41 @@ void CodeGenerator::drop_unbound(const Pattern& pattern, llvm::Value* address, c
     }
 }
 
+// A struct pattern names some fields; the others are dropped, in reverse
+// declaration order like the fields of a dropped struct.
+void CodeGenerator::drop_unbound_fields(const Pattern& pattern, llvm::Value* address,
+                                        const Type* type)
+{
+    const std::vector<FieldInfo>& fields = type->user->fields;
+    for (std::size_t field = fields.size(); field-- > 0;) {
+        llvm::Value* field_address = tuple_element_address(type, address, field);
+        const Pattern* written = nullptr;
+        for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+            if (pattern.field_indices[i] == static_cast<int>(field)) {
+                written = pattern.arguments[i].get();
+            }
+        }
+        if (written != nullptr) {
+            drop_unbound(*written, field_address, fields[field].type);
+        } else {
+            emit_drop(field_address, fields[field].type);
+        }
+    }
+}
+
 // True when the pattern binds a name to a part that needs dropping.
 bool CodeGenerator::binds_owned_value(const Pattern& pattern, const Type* type)
 {
     switch (pattern.kind) {
     case PatternKind::Binding: return needs_drop(type);
+    case PatternKind::Struct:
+        for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
+            const auto field = static_cast<std::size_t>(pattern.field_indices[i]);
+            if (binds_owned_value(*pattern.arguments[i], type->user->fields[field].type)) {
+                return true;
+            }
+        }
+        return false;
     case PatternKind::Tuple:
         for (std::size_t i = 0; i < pattern.arguments.size(); ++i) {
             if (binds_owned_value(*pattern.arguments[i], type->elements[i])) {

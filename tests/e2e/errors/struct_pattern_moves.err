@@ -1,0 +1,4 @@
+6:11: error: use of moved value 'p'
+5:22: note: 'p' was moved here
+8:11: error: use of moved value 'b'
+7:35: note: 'b' was moved here

@@ -111,6 +111,7 @@ std::optional<Pat> to_pat(const Pattern& pattern, const Type* type)
 {
     Pat result;
     switch (pattern.kind) {
+    case PatternKind::Struct: return std::nullopt; // rejected in 'match'
     case PatternKind::Wildcard:
     case PatternKind::Binding: return result;
     case PatternKind::Null:

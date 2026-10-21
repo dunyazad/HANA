@@ -250,6 +250,11 @@ StmtPtr CodeParser::parse_let()
         if (!let->pattern) {
             return nullptr;
         }
+    } else if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::LBrace) {
+        let->pattern = parse_pattern();
+        if (!let->pattern) {
+            return nullptr;
+        }
     } else if (check(TokenKind::Identifier)) {
         let->name = advance().text;
     } else {
@@ -497,9 +502,9 @@ bool CodeParser::parse_match_arm(MatchExpr& match_expr, bool is_expression)
     return true;
 }
 
-// '_', a name, a literal, a range 'a..b' / 'a..=b', 'null', a tuple, or an
+// '_', a name, a literal, a range 'a..b' / 'a..=b', 'null', a tuple, an
 // enum case 'Case' / 'Case(p, ...)' whose patterns match its fields in
-// order ('Some(p)' for an Option).
+// order ('Some(p)' for an Option), or a struct 'Pair { first, second: s }'.
 PatternPtr CodeParser::parse_pattern()
 {
     if (check(TokenKind::LParen)) {
@@ -516,6 +521,9 @@ PatternPtr CodeParser::parse_pattern()
         if (pattern->name == "_") {
             pattern->kind = PatternKind::Wildcard;
             return pattern;
+        }
+        if (check(TokenKind::LBrace)) {
+            return parse_struct_pattern(std::move(pattern));
         }
         if (!match(TokenKind::LParen)) {
             pattern->kind = PatternKind::Binding;
@@ -550,6 +558,43 @@ PatternPtr CodeParser::parse_pattern()
         if (!pattern->end) {
             return nullptr;
         }
+    }
+    return pattern;
+}
+
+// Name '{' field [':' pattern] {',' field [':' pattern]} [','] '}'. A
+// field written alone binds a name of the same name.
+PatternPtr CodeParser::parse_struct_pattern(PatternPtr pattern)
+{
+    pattern->kind = PatternKind::Struct;
+    advance(); // '{'
+    while (!check(TokenKind::RBrace)) {
+        if (!check(TokenKind::Identifier)) {
+            error_at(peek(), "expected a field name in the pattern, found " + describe_token(peek()));
+            return nullptr;
+        }
+        const Token& field = advance();
+        pattern->field_names.push_back(field.text);
+        pattern->field_locations.push_back(field.location);
+        PatternPtr value;
+        if (match(TokenKind::Colon)) {
+            value = parse_pattern();
+            if (!value) {
+                return nullptr;
+            }
+        } else {
+            value = std::make_unique<Pattern>();
+            value->kind = PatternKind::Binding;
+            value->location = field.location;
+            value->name = field.text;
+        }
+        pattern->arguments.push_back(std::move(value));
+        if (!match(TokenKind::Comma)) {
+            break;
+        }
+    }
+    if (!expect(TokenKind::RBrace, "'}' to close the struct pattern")) {
+        return nullptr;
     }
     return pattern;
 }
