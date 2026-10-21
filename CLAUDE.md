@@ -17,6 +17,10 @@
 - 사용자가 "터졌다"고 하면 빌드 에러가 아니라 런타임 크래시를 의미한다.
 - 사용자가 확정하지 않은 설계를 확정된 것처럼 다루지 않는다. 제안은 [초안]으로 표시한다.
 
+## 이어서 작업하기
+
+- `docs/progress.md`: 지금까지 한 것, 다음 할 일, 구현 구조, 검증 방법(퍼저 `tools/fuzz/`). 새 환경에서 작업을 시작하면 먼저 읽는다.
+
 ## 언어 정의
 
 - `docs/language.md`: 언어 정의. 문법과 의미의 기준. 문법을 바꾸면 이 문서를 먼저 고친다.
@@ -47,6 +51,7 @@ hana/
     cli/       hana 실행 파일
   runtime/     컴파일된 프로그램에 링크되는 C 런타임 (출력, panic)
   examples/
+  tools/fuzz/  퍼저: 프런트엔드 변형(mutate_frontend), 소유권(gen_ownership), '?' 정리(gen_try)
   tests/
     unit/        OuterParser/CodeLexer/CodeParser/Sema 단위 테스트
     e2e/run/     <이름>.hana 를 실행해 .out(표준 출력), .status(종료 코드), .stderr(포함 문구), .flags(hana run 옵션) 확인
