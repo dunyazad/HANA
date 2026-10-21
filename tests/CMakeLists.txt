@@ -24,12 +24,24 @@ endforeach()
 
 # The same programs again under AddressSanitizer, when the C compiler used
 # for linking can link with it.
-include(CheckCSourceCompiles)
-set(CMAKE_REQUIRED_FLAGS -fsanitize=address)
-set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=address)
-check_c_source_compiles("int main(void) { return 0; }" HANA_HAVE_ADDRESS_SANITIZER)
-unset(CMAKE_REQUIRED_FLAGS)
-unset(CMAKE_REQUIRED_LINK_OPTIONS)
+if(WIN32)
+    # Programs are linked with HANA_DEFAULT_CC (clang), not with the MSVC
+    # compiler CMake uses for C, so ask that clang directly.
+    set(probe_dir ${CMAKE_CURRENT_BINARY_DIR}/asan_probe)
+    file(WRITE ${probe_dir}/probe.c "int main(void) { return 0; }\n")
+    execute_process(COMMAND ${HANA_DEFAULT_CC} -fsanitize=address probe.c -o probe.exe
+        WORKING_DIRECTORY ${probe_dir} RESULT_VARIABLE probe_status OUTPUT_QUIET ERROR_QUIET)
+    if(probe_status EQUAL 0)
+        set(HANA_HAVE_ADDRESS_SANITIZER ON)
+    endif()
+else()
+    include(CheckCSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS -fsanitize=address)
+    set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=address)
+    check_c_source_compiles("int main(void) { return 0; }" HANA_HAVE_ADDRESS_SANITIZER)
+    unset(CMAKE_REQUIRED_FLAGS)
+    unset(CMAKE_REQUIRED_LINK_OPTIONS)
+endif()
 if(HANA_HAVE_ADDRESS_SANITIZER)
     foreach(source ${HANA_RUN_TESTS})
         get_filename_component(name ${source} NAME_WE)

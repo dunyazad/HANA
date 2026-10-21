@@ -1,0 +1,3 @@
+# HANA sources are LF in their canonical layout (hana fmt writes LF), so they
+# stay LF in every checkout, including Windows with core.autocrlf.
+*.hana text eol=lf

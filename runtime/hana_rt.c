@@ -291,7 +291,7 @@ _Noreturn void hana_rt_index_out_of_bounds(int64_t index, int64_t length, const 
     fwrite(where, 1, (size_t)where_length, stderr);
     fputc('\n', stderr);
     fflush(stderr);
-    abort();
+    _Exit(HANA_RT_PANIC_EXIT_CODE);
 }
 
 _Noreturn void hana_rt_panic(const char* data, int64_t length)
@@ -301,5 +301,5 @@ _Noreturn void hana_rt_panic(const char* data, int64_t length)
     fwrite(data, 1, (size_t)length, stderr);
     fputc('\n', stderr);
     fflush(stderr);
-    abort();
+    _Exit(HANA_RT_PANIC_EXIT_CODE);
 }

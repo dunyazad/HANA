@@ -74,8 +74,12 @@ void hana_rt_list_free(void* data, int64_t capacity);
 _Noreturn void hana_rt_index_out_of_bounds(int64_t index, int64_t length, const char* where,
                                            int64_t where_length);
 
+/* Exit code of a panicking program, the same on every platform. The process
+ * ends with _Exit, so no exit handlers (and no leak check) run. */
+#define HANA_RT_PANIC_EXIT_CODE 101
+
 /* Flushes standard output, prints "panic: <message>" to standard error and
- * aborts the process. */
+ * ends the process with HANA_RT_PANIC_EXIT_CODE. */
 _Noreturn void hana_rt_panic(const char* data, int64_t length);
 
 #ifdef __cplusplus

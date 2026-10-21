@@ -8,7 +8,7 @@
 - 답변은 한국어 존댓말. 코드 주석은 ASCII 영어만. 코드는 완전한 함수 단위로 전달한다 (`CLAUDE.md`).
 - 사용자가 **"추천대로 가자" / "쭉 추천대로 진행해"**라고 하면, 묻지 않고 추천안으로 끝까지 구현한다.
   - 사용자가 직접 고른 설계만 `docs/decisions.md`에 번호를 붙여 기록한다 (현재 1~62번).
-  - 내가 고른 세부 설계는 `docs/language.md` 14절 "잠정 동작 [초안]"에 번호를 붙여 적는다 (현재 1~84번). 작업이 끝나면 확인할 [초안] 목록을 한 번에 보고한다.
+  - 내가 고른 세부 설계는 `docs/language.md` 14절 "잠정 동작 [초안]"에 번호를 붙여 적는다 (현재 1~87번). 작업이 끝나면 확인할 [초안] 목록을 한 번에 보고한다.
   - 큰 갈림길(문법 표기 등)은 선택지 2~4개와 추천안을 함께 묻는다. 사용자가 "추천대로"라고 하면 그대로 결정으로 기록한다.
 - "터졌다" = 런타임 크래시. 문제는 근본 원인을 고친다. 임시방편은 쓰지 않는다.
 - 단계를 마칠 때마다 커밋하고, 보고에는 무엇을 했는지, 찾은 버그, 정해 둔 [초안]을 쓴다.
@@ -62,6 +62,19 @@ python3 tools/fuzz/mutate_frontend.py build-asan/hana /tmp/fz1 1      # front-en
 python3 tools/fuzz/gen_ownership.py build/hana /tmp/fz2 1 200          # leaks / double frees
 python3 tools/fuzz/gen_try.py build/hana /tmp/fz3 1 200                # '?' early-return cleanup
 ```
+
+Windows (Visual Studio 2026, LLVM 18.1.8 공식 배포본 `clang+llvm-18.1.8-x86_64-pc-windows-msvc`):
+
+```
+run.bat --version                 # configure if needed, build Debug and Release, run Release hana
+runwithoutbuild.bat run examples\fib.hana
+ctest --test-dir build -C Release -j8
+ctest --test-dir build -C Debug -j8
+```
+
+- `run.bat`은 `LLVM_DIR`이 없으면 `D:\Tools\clang+llvm-18.1.8-x86_64-pc-windows-msvc\lib\cmake\llvm`을 쓴다.
+- LLVM 배포본은 /MD(릴리스 DLL C 런타임)라서 Debug 구성도 /MD로 빌드한다. 배포본이 기록한 DIA SDK 경로(빌드 머신의 VS 2019)는 CMake가 지금 VS의 `diaguids.lib`로 바꾼다.
+- Windows ASan은 누수를 찾지 못한다 (language.md 14절 85~87번과 14.1). 누수 검사와 `gen_ownership` 퍼저는 Linux(WSL)에서 돌린다.
 
 - 새 기능에는 `tests/e2e/run`(출력), `tests/e2e/errors`(진단), `tests/unit`을 함께 추가한다. `e2e/run` 프로그램은 자동으로 `memory.*`(ASan)와 `format.*` 테스트도 거친다.
 - 메모리를 다루는 기능은 `hana run --sanitize=address`로 직접 돌려 본다. 퍼저가 실제로 버그를 잡는지는, 일부러 해제 코드를 빼서 한 번 확인해 두면 좋다.

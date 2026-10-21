@@ -9,8 +9,6 @@
 #include <optional>
 #include <system_error>
 
-#include <unistd.h>
-
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
@@ -130,10 +128,24 @@ bool generate_code(const Frontend& frontend, const GenerateOptions& generate, Ba
     return true;
 }
 
+#ifdef _WIN32
+constexpr const char* kRuntimeLibraryName = "hana_rt.lib";
+constexpr const char* kExecutableSuffix = ".exe";
+#else
+constexpr const char* kRuntimeLibraryName = "libhana_rt.a";
+constexpr const char* kExecutableSuffix = "";
+#endif
+
+// The build may fix the default linker driver (HANA_DEFAULT_CC); on Windows
+// this is the clang of the LLVM installation HANA was built with.
+#ifndef HANA_DEFAULT_CC
+#define HANA_DEFAULT_CC "cc"
+#endif
+
 std::string linker_program()
 {
     const char* configured = std::getenv("HANA_CC");
-    return (configured != nullptr && *configured != '\0') ? configured : "cc";
+    return (configured != nullptr && *configured != '\0') ? configured : HANA_DEFAULT_CC;
 }
 
 // The runtime library is found through HANA_RUNTIME, or next to the hana
@@ -143,15 +155,15 @@ std::string find_runtime_library()
     if (const char* configured = std::getenv("HANA_RUNTIME"); configured != nullptr && *configured) {
         return configured;
     }
-    std::error_code error;
-    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", error);
-    if (error) {
+    const std::filesystem::path self = current_executable_path();
+    if (self.empty()) {
         return {};
     }
     const std::filesystem::path candidates[] = {
-        self.parent_path() / "libhana_rt.a",
-        self.parent_path().parent_path() / "lib" / "libhana_rt.a",
+        self.parent_path() / kRuntimeLibraryName,
+        self.parent_path().parent_path() / "lib" / kRuntimeLibraryName,
     };
+    std::error_code error;
     for (const std::filesystem::path& candidate : candidates) {
         if (std::filesystem::exists(candidate, error)) {
             return candidate.string();
@@ -165,7 +177,8 @@ bool link_executable(const std::string& object_path, const std::string& output_p
 {
     const std::string runtime = find_runtime_library();
     if (runtime.empty()) {
-        tool_error("cannot find the runtime library libhana_rt.a (set HANA_RUNTIME to its path)");
+        tool_error(std::string("cannot find the runtime library ") + kRuntimeLibraryName +
+                   " (set HANA_RUNTIME to its path)");
         return false;
     }
     const std::string linker = linker_program();
@@ -173,7 +186,7 @@ bool link_executable(const std::string& object_path, const std::string& output_p
     if (sanitize_address) {
         command.push_back("-fsanitize=address");
     }
-    const int status = run_process(command);
+    const int status = run_process(command, ChildOutput::ToStderr);
     if (status == -1) {
         tool_error("cannot run the linker '" + linker + "' (set HANA_CC to choose another)");
         return false;
@@ -203,19 +216,13 @@ bool build_executable(const Frontend& frontend, const GenerateOptions& generate,
 
 std::string default_output_path(const std::string& source_path)
 {
-    return std::filesystem::path(source_path).stem().string();
+    return std::filesystem::path(source_path).stem().string() + kExecutableSuffix;
 }
 
 // Creates a private temporary directory; removed by the destructor.
 class TempDirectory {
 public:
-    TempDirectory()
-    {
-        std::string pattern = (std::filesystem::temp_directory_path() / "hana-XXXXXX").string();
-        if (mkdtemp(pattern.data()) != nullptr) {
-            path_ = pattern;
-        }
-    }
+    TempDirectory() : path_(create_temp_directory()) {}
     ~TempDirectory()
     {
         if (!path_.empty()) {
@@ -276,6 +283,7 @@ int run_format(const FormatOptions& options)
     }
     const bool changed = *formatted != frontend.file.text;
     if (options.to_stdout) {
+        set_stdout_binary();
         std::fputs(formatted->c_str(), stdout);
         return kExitOk;
     }
@@ -343,7 +351,7 @@ int run_program(const RunOptions& options)
         tool_error("cannot create a temporary directory");
         return kExitToolFailure;
     }
-    const std::string executable = temp.file("program");
+    const std::string executable = temp.file(std::string("program") + kExecutableSuffix);
     if (!build_executable(frontend, GenerateOptions{options.optimize, options.sanitize_address}, temp.file("main.o"), executable)) {
         return kExitToolFailure;
     }

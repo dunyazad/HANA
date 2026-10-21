@@ -77,3 +77,5 @@ ctest --test-dir build
 ./build/hana fmt --check examples/fib.hana
 ./build/hana build --emit-ir examples/fib.hana
 ```
+
+Windows: Visual Studio 2026과 LLVM 18 Windows 배포본. `run.bat`(Debug와 Release 빌드 후 Release `hana` 실행), `runwithoutbuild.bat`(빌드 없이 실행). 자세한 것은 `docs/progress.md` 5절.

@@ -5,6 +5,10 @@
 
 #include "driver/driver.h"
 
+#ifndef HANA_DEFAULT_CC
+#define HANA_DEFAULT_CC "cc"
+#endif
+
 namespace {
 
 using hana::driver::kExitOk;
@@ -33,7 +37,7 @@ void print_usage(std::FILE* out)
                "  --stdout    (fmt) print the formatted file instead of rewriting it\n"
                "\n"
                "environment:\n"
-               "  HANA_CC     C compiler used for linking (default: cc)\n",
+               "  HANA_CC     C compiler used for linking (default: " HANA_DEFAULT_CC ")\n",
                out);
 }
 

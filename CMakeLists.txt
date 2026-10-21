@@ -16,11 +16,40 @@ if(NOT LLVM_VERSION_MAJOR EQUAL 18)
 endif()
 message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
 
+# The prebuilt LLVM libraries for Windows use the release DLL C runtime, so
+# every configuration (Debug included) of the compiler must use it too. This
+# comes after find_package because LLVMConfig.cmake resets the variable.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
+endif()
+
+# The prebuilt LLVM for Windows records the DIA SDK library with the absolute
+# path of the machine it was built on. Point it at this Visual Studio's copy.
+if(MSVC AND TARGET LLVMDebugInfoPDB)
+    get_target_property(hana_pdb_libs LLVMDebugInfoPDB INTERFACE_LINK_LIBRARIES)
+    set(hana_pdb_fixed_libs "")
+    foreach(lib IN LISTS hana_pdb_libs)
+        if(lib MATCHES "diaguids\\.lib$" AND NOT EXISTS "${lib}")
+            find_library(HANA_DIA_GUIDS_LIBRARY diaguids
+                PATHS "${CMAKE_GENERATOR_INSTANCE}/DIA SDK/lib/amd64"
+                      "$ENV{VSINSTALLDIR}/DIA SDK/lib/amd64"
+                NO_DEFAULT_PATH)
+            if(NOT HANA_DIA_GUIDS_LIBRARY)
+                message(FATAL_ERROR "LLVM needs diaguids.lib from the Visual Studio DIA SDK, not found")
+            endif()
+            set(lib "${HANA_DIA_GUIDS_LIBRARY}")
+        endif()
+        list(APPEND hana_pdb_fixed_libs "${lib}")
+    endforeach()
+    set_target_properties(LLVMDebugInfoPDB PROPERTIES INTERFACE_LINK_LIBRARIES "${hana_pdb_fixed_libs}")
+endif()
+
 if(LLVM_LINK_LLVM_DYLIB)
     set(HANA_LLVM_LIBS LLVM)
 else()
     llvm_map_components_to_libnames(HANA_LLVM_LIBS
-        core support passes target targetparser analysis nativecodegen instrumentation)
+        core support passes target targetparser analysis nativecodegen ${LLVM_NATIVE_ARCH}asmparser
+        instrumentation)
 endif()
 
 if(MSVC)
@@ -81,6 +110,15 @@ add_library(hana_driver STATIC
     src/driver/process.cpp
 )
 target_link_libraries(hana_driver PUBLIC hana_codegen)
+# On Windows programs are linked with the clang driver of the LLVM
+# installation HANA is built with; it finds the MSVC linker and libraries.
+if(WIN32)
+    set(HANA_DEFAULT_CC "${LLVM_TOOLS_BINARY_DIR}/clang.exe")
+    if(NOT EXISTS "${HANA_DEFAULT_CC}")
+        message(FATAL_ERROR "HANA needs clang.exe next to LLVM, not found at ${HANA_DEFAULT_CC}")
+    endif()
+    target_compile_definitions(hana_driver PUBLIC HANA_DEFAULT_CC="${HANA_DEFAULT_CC}")
+endif()
 target_compile_options(hana_driver PRIVATE ${HANA_WARNING_FLAGS})
 
 # Runtime library linked into every compiled HANA program. It is placed next
@@ -90,6 +128,10 @@ set_target_properties(hana_rt PROPERTIES
     C_STANDARD 11
     POSITION_INDEPENDENT_CODE ON
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+# clang links programs with the static C runtime by default on Windows.
+if(MSVC)
+    set_target_properties(hana_rt PROPERTIES MSVC_RUNTIME_LIBRARY MultiThreaded)
+endif()
 target_compile_options(hana_rt PRIVATE ${HANA_WARNING_FLAGS})
 
 add_executable(hana src/cli/main.cpp)

@@ -881,6 +881,9 @@ print(v3(1, 2, 3))
 82. 패턴의 타입 이름은 타입 인자 없이 쓴다 (`Pair<i32>` 값도 `let Pair { ... }`). 값의 타입과 이름이 다르면 오류다.
 83. `drop`이 있는 struct는 분해할 수 없다. `drop`은 값 전체가 있어야 하기 때문이다. enum은 `match`로 꺼낸다.
 84. struct 패턴은 지금 `let`에서만 쓴다. `match`의 struct 패턴(`Point { x: 0, y }`)은 아직 없다.
+85. panic한 프로그램의 종료 코드는 모든 플랫폼에서 101이다. 런타임은 `abort()` 대신 `_Exit(101)`로 끝내므로 종료 처리기(누수 검사 포함)가 돌지 않는다. 이전에는 `abort()`라 Linux에서 134, Windows에서 3으로 달랐다.
+86. `hana run`의 표준 출력에는 프로그램의 출력만 나온다. 링커(`cc`, `clang`)의 출력은 표준 에러로 보낸다.
+87. Windows: 프로그램은 HANA를 빌드한 LLVM의 `clang.exe`로 링크한다 (`HANA_CC`로 바꿀 수 있음). 런타임은 `hana_rt.lib`(정적 C 런타임), 실행 파일 이름에는 `.exe`가 붙는다. `.hana` 파일은 `.gitattributes`로 Windows checkout에서도 LF로 둔다 (`hana fmt`가 LF를 쓰기 때문).
 
 ### 14.1 도구
 
@@ -894,7 +897,7 @@ print(v3(1, 2, 3))
 - `note`는 바로 앞 오류의 `notes`에 들어간다.
 - [초안] 자동 수정안(`fixes`)은 이후에 추가한다.
 
-**`hana run/build --sanitize=address`**: 생성 코드에 AddressSanitizer 계측을 넣고 `-fsanitize=address`로 링크한다. 해제한 메모리 사용, 두 번 해제, 누수를 실행 중에 찾는다. 컴파일러 개발용이고, 링크하는 `cc`가 AddressSanitizer를 지원해야 한다. 테스트(`memory.*`)는 `e2e/run`의 모든 프로그램을 이 옵션으로 다시 실행한다.
+**`hana run/build --sanitize=address`**: 생성 코드에 AddressSanitizer 계측을 넣고 `-fsanitize=address`로 링크한다. 해제한 메모리 사용, 두 번 해제, 누수를 실행 중에 찾는다. 컴파일러 개발용이고, 링크하는 `cc`가 AddressSanitizer를 지원해야 한다. 테스트(`memory.*`)는 `e2e/run`의 모든 프로그램을 이 옵션으로 다시 실행한다. Windows의 AddressSanitizer(LLVM 18)는 해제 후 사용과 두 번 해제는 찾지만 누수는 찾지 못한다 ("detect_leaks is not supported on this platform"). 누수 검사는 Linux에서 한다.
 
 **`hana fmt`**: 표준 배치로 다시 들여 쓴다.
 - JSON 층은 열린 `{`, `[`, `(` 하나당 2칸.

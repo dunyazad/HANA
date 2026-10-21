@@ -27,6 +27,10 @@ if(MODE STREQUAL "run" OR MODE STREQUAL "memory")
         message(FATAL_ERROR "exit status ${status}, expected ${expected_status}\n${errors}")
     endif()
     file(READ ${dir}/${name}.out expected)
+    # Line breaks may be CRLF in a Windows checkout and in a Windows program's
+    # text-mode output; compare the text, not the line break style.
+    string(REPLACE "\r\n" "\n" expected "${expected}")
+    string(REPLACE "\r\n" "\n" actual "${actual}")
     if(NOT actual STREQUAL expected)
         message(FATAL_ERROR "output differs\n--- expected\n${expected}--- actual\n${actual}")
     endif()
